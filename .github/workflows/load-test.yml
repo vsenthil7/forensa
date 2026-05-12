@@ -1,0 +1,82 @@
+name: Load test
+
+on:
+  workflow_dispatch:
+    inputs:
+      sustained_users:
+        description: 'Sustained concurrent users'
+        default: '100'
+      peak_users:
+        description: 'Peak concurrent users'
+        default: '1000'
+      duration:
+        description: 'Run duration'
+        default: '10m'
+  schedule:
+    - cron: '0 3 * * 1'  # Mondays 03:00 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  load:
+    name: Locust load test (BR-09 throughput proof)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: forensa
+          POSTGRES_PASSWORD: forensa_load
+          POSTGRES_DB: forensa_load
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Poetry
+        run: pipx install poetry==1.8.4
+      - name: Install deps
+        run: poetry install --with dev --no-interaction
+      - name: Run migrations
+        env:
+          DATABASE_URL: postgresql+asyncpg://forensa:forensa_load@localhost:5432/forensa_load
+        run: poetry run alembic upgrade head
+      - name: Start API
+        env:
+          DATABASE_URL: postgresql+asyncpg://forensa:forensa_load@localhost:5432/forensa_load
+        run: poetry run uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 --workers 4 &
+      - name: Wait for API
+        run: npx wait-on http://localhost:8000/healthz --timeout 60000
+      - name: Run sustained load test (10K events/sec target)
+        run: |
+          poetry run locust -f load-tests/locustfile.py \
+            --headless \
+            --users ${{ inputs.sustained_users || '100' }} \
+            --spawn-rate 50 \
+            --run-time ${{ inputs.duration || '10m' }} \
+            --host http://localhost:8000 \
+            --html load-report-sustained.html
+      - name: Run burst load test (100K events/sec peak target)
+        run: |
+          poetry run locust -f load-tests/locustfile.py \
+            --headless \
+            --users ${{ inputs.peak_users || '1000' }} \
+            --spawn-rate 200 \
+            --run-time 2m \
+            --host http://localhost:8000 \
+            --html load-report-peak.html
+      - name: Upload load reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-reports
+          path: load-report-*.html
+

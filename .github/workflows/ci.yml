@@ -1,0 +1,296 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  POETRY_VERSION: '1.8.4'
+  PYTHON_VERSION: '3.12'
+  NODE_VERSION: '22'
+  PNPM_VERSION: '9'
+
+jobs:
+  python-tests:
+    name: Python tests (100% coverage gate)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: forensa
+          POSTGRES_PASSWORD: forensa_ci
+          POSTGRES_DB: forensa_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      - name: Install Poetry
+        run: pipx install poetry==${{ env.POETRY_VERSION }}
+      - name: Cache Poetry virtualenv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: poetry-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+      - name: Install dependencies
+        run: poetry install --with dev --no-interaction
+      - name: Run migrations
+        env:
+          DATABASE_URL: postgresql+asyncpg://forensa:forensa_ci@localhost:5432/forensa_test
+        run: poetry run alembic upgrade head
+      - name: Run pytest with coverage (100%% gate)
+        env:
+          DATABASE_URL: postgresql+asyncpg://forensa:forensa_ci@localhost:5432/forensa_test
+        run: poetry run pytest --cov=packages --cov=apps/api --cov-fail-under=100 --cov-report=xml --cov-report=term-missing
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-coverage
+          path: coverage.xml
+
+
+  typescript-tests:
+    name: TypeScript tests (100% coverage gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - name: Get pnpm store dir
+        id: pnpm-cache
+        shell: bash
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: pnpm-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Run vitest with coverage (100%% gate)
+        run: pnpm --filter @forensa/console vitest run --coverage
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: typescript-coverage
+          path: apps/console/coverage
+
+  playwright-e2e:
+    name: Playwright E2E
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: forensa
+          POSTGRES_PASSWORD: forensa_ci
+          POSTGRES_DB: forensa_e2e
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install Poetry
+        run: pipx install poetry==${{ env.POETRY_VERSION }}
+      - name: Install Python deps
+        run: poetry install --with dev --no-interaction
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - name: Install Node deps
+        run: pnpm install --frozen-lockfile
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run migrations
+        env:
+          DATABASE_URL: postgresql+asyncpg://forensa:forensa_ci@localhost:5432/forensa_e2e
+        run: poetry run alembic upgrade head
+      - name: Start API in background
+        env:
+          DATABASE_URL: postgresql+asyncpg://forensa:forensa_ci@localhost:5432/forensa_e2e
+        run: poetry run uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 &
+      - name: Wait for API ready
+        run: npx wait-on http://localhost:8000/healthz --timeout 60000
+      - name: Run Playwright tests
+        run: pnpm exec playwright test
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+
+
+  lint:
+    name: Lint and type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install Poetry
+        run: pipx install poetry==${{ env.POETRY_VERSION }}
+      - name: Install deps
+        run: poetry install --with dev --no-interaction
+      - name: Ruff
+        run: poetry run ruff check .
+      - name: Ruff format check
+        run: poetry run ruff format --check .
+      - name: Mypy
+        run: poetry run mypy packages apps/api
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - name: Install Node deps
+        run: pnpm install --frozen-lockfile
+      - name: ESLint
+        run: pnpm --filter @forensa/console lint
+      - name: TypeScript strict check
+        run: pnpm --filter @forensa/console exec tsc --noEmit
+
+  security:
+    name: Security scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install Poetry
+        run: pipx install poetry==${{ env.POETRY_VERSION }}
+      - name: Install deps
+        run: poetry install --with dev --no-interaction
+      - name: Bandit (Python SAST)
+        run: poetry run bandit -r packages apps/api -ll
+      - name: pip-audit
+        run: poetry run pip-audit --strict
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - name: pnpm audit
+        run: pnpm audit --audit-level high
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: CodeQL Python
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python, typescript
+      - name: Run CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+
+
+  build-docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    needs: [python-tests, typescript-tests, lint, security]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          tags: forensa-api:${{ github.sha }}
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build Console image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/console/Dockerfile
+          tags: forensa-console:${{ github.sha }}
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  sbom:
+    name: Generate SBOM
+    runs-on: ubuntu-latest
+    needs: [python-tests, typescript-tests]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install Poetry
+        run: pipx install poetry==${{ env.POETRY_VERSION }}
+      - name: Install cyclonedx-py
+        run: pipx install cyclonedx-bom
+      - name: Generate Python SBOM
+        run: cyclonedx-py poetry --output-format JSON --output-file forensa-python.cdx.json
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: forensa-python.cdx.json
+
+  ci-gate:
+    name: CI gate (all checks passed)
+    runs-on: ubuntu-latest
+    needs: [python-tests, typescript-tests, playwright-e2e, lint, security]
+    if: always()
+    steps:
+      - name: Check all jobs succeeded
+        run: |
+          if [ "${{ needs.python-tests.result }}" != "success" ]; then echo "python-tests failed"; exit 1; fi
+          if [ "${{ needs.typescript-tests.result }}" != "success" ]; then echo "typescript-tests failed"; exit 1; fi
+          if [ "${{ needs.playwright-e2e.result }}" != "success" ]; then echo "playwright-e2e failed"; exit 1; fi
+          if [ "${{ needs.lint.result }}" != "success" ]; then echo "lint failed"; exit 1; fi
+          if [ "${{ needs.security.result }}" != "success" ]; then echo "security failed"; exit 1; fi
+          echo "All CI gates passed"
+

@@ -1,0 +1,109 @@
+# Forensa .gitignore — pattern carried from Verixa with Forensa additions
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+*.egg
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Poetry
+poetry.toml
+
+# Testing / coverage
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.pytest_cache/
+.hypothesis/
+.ruff_cache/
+.mypy_cache/
+coverage.xml
+
+# Node / pnpm
+node_modules/
+.pnpm-store/
+.pnpm-debug.log*
+npm-debug.log*
+
+# Next.js
+.next/
+out/
+.vercel
+.turbo
+
+# Vitest
+vitest.config.ts.timestamp-*
+
+# Playwright
+test-results/
+playwright-report/
+playwright/.cache/
+
+# TypeScript
+*.tsbuildinfo
+
+# IDEs
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+logs/
+*.log
+src/logs/
+
+# Secrets — NEVER commit
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Build artefacts
+*.tar.gz
+*.zip
+*.tgz
+
+# Docker
+.docker/
+docker-compose.override.yml
+
+# AWS
+.aws/
+
+# Scratch
+.scratch/
+tmp/
+.tmp/
+
+# Forensa: never commit raw evidence packs
+dossiers/
+test-dossiers/
+sample-evidence/*.pdf
+sample-evidence/*.json.signed

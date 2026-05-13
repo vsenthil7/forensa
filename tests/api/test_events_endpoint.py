@@ -1,7 +1,8 @@
 """Tests for POST /v1/events ingestion endpoint."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -17,7 +18,7 @@ def _valid_event_payload(**over):
         "trace_id": "a" * 32,
         "span_id": "b" * 16,
         "kind": "tool_call",
-        "occurred_at": datetime(2026, 5, 13, 9, 50, tzinfo=timezone.utc).isoformat(),
+        "occurred_at": datetime(2026, 5, 13, 9, 50, tzinfo=UTC).isoformat(),
     }
     base.update(over)
     return base
@@ -105,16 +106,24 @@ async def test_post_event_rejects_extra_field(client):
 
 @pytest.mark.asyncio
 async def test_post_event_with_all_event_kinds(client):
-    for kind in ["tool_call", "tool_result", "llm_invocation", "auth_decision", "policy_verdict", "agent_message", "resource_access"]:
+    for kind in [
+        "tool_call",
+        "tool_result",
+        "llm_invocation",
+        "auth_decision",
+        "policy_verdict",
+        "agent_message",
+        "resource_access",
+    ]:
         resp = await client.post("/v1/events", json=_valid_event_payload(kind=kind))
         assert resp.status_code == 202, f"kind={kind} should be accepted"
 
 
 @pytest.mark.asyncio
 async def test_post_event_accepted_at_is_recent(client):
-    before = datetime.now(timezone.utc)
+    before = datetime.now(UTC)
     resp = await client.post("/v1/events", json=_valid_event_payload())
-    after = datetime.now(timezone.utc)
+    after = datetime.now(UTC)
     accepted_at = datetime.fromisoformat(resp.json()["accepted_at"])
     assert before <= accepted_at <= after
 
@@ -124,4 +133,3 @@ async def test_post_event_returns_unique_event_ids(client):
     r1 = await client.post("/v1/events", json=_valid_event_payload())
     r2 = await client.post("/v1/events", json=_valid_event_payload())
     assert r1.json()["event_id"] != r2.json()["event_id"]
-

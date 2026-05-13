@@ -1,7 +1,8 @@
 """Tests for Event schema model — 100% branch coverage."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -17,7 +18,7 @@ def _good(**over):
         trace_id="a" * 32,
         span_id="b" * 16,
         kind=EventKind.TOOL_CALL,
-        occurred_at=datetime(2026, 5, 13, 8, 0, tzinfo=timezone.utc),
+        occurred_at=datetime(2026, 5, 13, 8, 0, tzinfo=UTC),
     )
     base.update(over)
     return base

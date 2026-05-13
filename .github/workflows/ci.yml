@@ -42,7 +42,9 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
       - name: Install Poetry
-        run: pipx install poetry==${{ env.POETRY_VERSION }}
+        run: |
+          pipx install poetry==${{ env.POETRY_VERSION }}
+          pipx inject poetry poetry-plugin-export
       - name: Cache Poetry virtualenv
         uses: actions/cache@v4
         with:
@@ -52,11 +54,11 @@ jobs:
         run: poetry install --with dev --no-interaction
       - name: Run migrations
         env:
-          DATABASE_URL: postgresql+asyncpg://forensa:forensa_ci@localhost:5432/forensa_test
+          FORENSA_DATABASE_URL: postgresql+asyncpg://forensa:forensa_ci@localhost:5432/forensa_test
         run: poetry run alembic upgrade head
       - name: Run pytest with coverage (100%% gate)
         env:
-          DATABASE_URL: postgresql+asyncpg://forensa:forensa_ci@localhost:5432/forensa_test
+          FORENSA_DATABASE_URL: postgresql+asyncpg://forensa:forensa_ci@localhost:5432/forensa_test
         run: poetry run pytest --cov=packages --cov=apps/api --cov-fail-under=100 --cov-report=xml --cov-report=term-missing
       - name: Upload coverage
         uses: actions/upload-artifact@v4
@@ -120,7 +122,9 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install Poetry
-        run: pipx install poetry==${{ env.POETRY_VERSION }}
+        run: |
+          pipx install poetry==${{ env.POETRY_VERSION }}
+          pipx inject poetry poetry-plugin-export
       - name: Install Python deps
         run: poetry install --with dev --no-interaction
       - name: Set up Node
@@ -137,11 +141,11 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
       - name: Run migrations
         env:
-          DATABASE_URL: postgresql+asyncpg://forensa:forensa_ci@localhost:5432/forensa_e2e
+          FORENSA_DATABASE_URL: postgresql+asyncpg://forensa:forensa_ci@localhost:5432/forensa_e2e
         run: poetry run alembic upgrade head
       - name: Start API in background
         env:
-          DATABASE_URL: postgresql+asyncpg://forensa:forensa_ci@localhost:5432/forensa_e2e
+          FORENSA_DATABASE_URL: postgresql+asyncpg://forensa:forensa_ci@localhost:5432/forensa_e2e
         run: poetry run uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 &
       - name: Wait for API ready
         run: npx wait-on http://localhost:8000/healthz --timeout 60000
@@ -165,7 +169,9 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install Poetry
-        run: pipx install poetry==${{ env.POETRY_VERSION }}
+        run: |
+          pipx install poetry==${{ env.POETRY_VERSION }}
+          pipx inject poetry poetry-plugin-export
       - name: Install deps
         run: poetry install --with dev --no-interaction
       - name: Ruff
@@ -199,13 +205,17 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install Poetry
-        run: pipx install poetry==${{ env.POETRY_VERSION }}
+        run: |
+          pipx install poetry==${{ env.POETRY_VERSION }}
+          pipx inject poetry poetry-plugin-export
       - name: Install deps
         run: poetry install --with dev --no-interaction
       - name: Bandit (Python SAST)
         run: poetry run bandit -r packages apps/api -ll
-      - name: pip-audit
-        run: poetry run pip-audit --strict
+      - name: pip-audit (Python lockfile vulns)
+        run: |
+          poetry export --without-hashes --with dev -f requirements.txt -o /tmp/requirements.txt
+          poetry run pip-audit --requirement /tmp/requirements.txt --strict
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
@@ -268,7 +278,9 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install Poetry
-        run: pipx install poetry==${{ env.POETRY_VERSION }}
+        run: |
+          pipx install poetry==${{ env.POETRY_VERSION }}
+          pipx inject poetry poetry-plugin-export
       - name: Install cyclonedx-py
         run: pipx install cyclonedx-bom
       - name: Generate Python SBOM

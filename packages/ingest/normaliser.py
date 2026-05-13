@@ -6,14 +6,15 @@ agent_id (resolved from OTel resource attributes or an auth gate upstream).
 
 Reference: https://opentelemetry.io/docs/specs/semconv/gen-ai/
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, Mapping
+from collections.abc import Mapping
+from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from packages.schema.event import Event, EventKind
-
 
 # Mapping from OTel GenAI span operation type to internal EventKind.
 # https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-spans/
@@ -52,14 +53,13 @@ def _parse_occurred_at(raw: Any) -> datetime:
             raise NormaliserError("occurred_at datetime must be timezone-aware")
         return raw
     if isinstance(raw, int):
-        return datetime.fromtimestamp(raw / 1_000_000_000, tz=timezone.utc)
+        return datetime.fromtimestamp(raw / 1_000_000_000, tz=UTC)
     if isinstance(raw, str):
         dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
         if dt.tzinfo is None:
             raise NormaliserError(f"occurred_at string lacks timezone: {raw!r}")
         return dt
     raise NormaliserError(f"occurred_at unsupported type: {type(raw).__name__}")
-
 
 
 def _resolve_kind(attributes: Mapping[str, Any]) -> EventKind:
@@ -82,7 +82,6 @@ def _resolve_kind(attributes: Mapping[str, Any]) -> EventKind:
         return _GENAI_OP_TO_KIND[op_name]
 
     return EventKind.AGENT_MESSAGE
-
 
 
 def normalise_otel_span(
@@ -122,7 +121,6 @@ def normalise_otel_span(
 
     kind = _resolve_kind(attributes)
 
-
     if occurred_at is not None:
         occ = _parse_occurred_at(occurred_at)
     elif "start_time_unix_nano" in span:
@@ -150,4 +148,3 @@ def normalise_otel_span(
         policy_version=policy_version,
         policy_verdict=policy_verdict,
     )
-

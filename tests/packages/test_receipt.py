@@ -1,14 +1,14 @@
 """Tests for Receipt schema model — 100% branch coverage."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
 
 from packages.schema.receipt import Receipt
-
 
 _GOOD_HASH = "a" * 64
 _GOOD_SIG = b"\x01" * 64
@@ -23,7 +23,7 @@ def _good(**over):
         payload_hash=_GOOD_HASH,
         receipt_hash="b" * 64,
         signature=_GOOD_SIG,
-        signed_at=datetime(2026, 5, 13, 8, 0, tzinfo=timezone.utc),
+        signed_at=datetime(2026, 5, 13, 8, 0, tzinfo=UTC),
     )
     base.update(over)
     return base

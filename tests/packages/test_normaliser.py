@@ -1,14 +1,14 @@
 """Tests for OTel GenAI span normaliser."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
 
 from packages.ingest.normaliser import NormaliserError, normalise_otel_span
 from packages.schema.event import EventKind
-
 
 TENANT = uuid4()
 AGENT = uuid4()
@@ -104,7 +104,7 @@ def test_missing_start_time_raises():
 
 
 def test_explicit_occurred_at_overrides_span_time():
-    fixed = datetime(2026, 5, 13, 10, 0, tzinfo=timezone.utc)
+    fixed = datetime(2026, 5, 13, 10, 0, tzinfo=UTC)
     span = _good_span()
     ev = normalise_otel_span(span, tenant_id=TENANT, agent_id=AGENT, occurred_at=fixed)
     assert ev.occurred_at == fixed
@@ -191,30 +191,36 @@ def test_no_attributes_defaults_to_agent_message():
 
 
 def test_forensa_reasoning_extracted_to_event_field():
-    span = _good_span(attributes={
-        "gen_ai.operation.name": "chat",
-        "forensa.reasoning": "I chose this because the user asked",
-    })
+    span = _good_span(
+        attributes={
+            "gen_ai.operation.name": "chat",
+            "forensa.reasoning": "I chose this because the user asked",
+        }
+    )
     ev = normalise_otel_span(span, tenant_id=TENANT, agent_id=AGENT)
     assert ev.reasoning == "I chose this because the user asked"
     assert "forensa.reasoning" not in ev.payload
 
 
 def test_genai_response_text_falls_back_to_reasoning():
-    span = _good_span(attributes={
-        "gen_ai.operation.name": "chat",
-        "gen_ai.response.text": "The answer is 42",
-    })
+    span = _good_span(
+        attributes={
+            "gen_ai.operation.name": "chat",
+            "gen_ai.response.text": "The answer is 42",
+        }
+    )
     ev = normalise_otel_span(span, tenant_id=TENANT, agent_id=AGENT)
     assert ev.reasoning == "The answer is 42"
 
 
 def test_policy_fields_extracted_from_attributes():
-    span = _good_span(attributes={
-        "gen_ai.operation.name": "chat",
-        "forensa.policy.version": "2.1.0",
-        "forensa.policy.verdict": "allow",
-    })
+    span = _good_span(
+        attributes={
+            "gen_ai.operation.name": "chat",
+            "forensa.policy.version": "2.1.0",
+            "forensa.policy.verdict": "allow",
+        }
+    )
     ev = normalise_otel_span(span, tenant_id=TENANT, agent_id=AGENT)
     assert ev.policy_version == "2.1.0"
     assert ev.policy_verdict == "allow"
@@ -223,11 +229,13 @@ def test_policy_fields_extracted_from_attributes():
 
 
 def test_payload_preserves_other_attributes():
-    span = _good_span(attributes={
-        "gen_ai.operation.name": "chat",
-        "gen_ai.request.model": "gemini-2.5-pro",
-        "gen_ai.usage.input_tokens": 142,
-    })
+    span = _good_span(
+        attributes={
+            "gen_ai.operation.name": "chat",
+            "gen_ai.request.model": "gemini-2.5-pro",
+            "gen_ai.usage.input_tokens": 142,
+        }
+    )
     ev = normalise_otel_span(span, tenant_id=TENANT, agent_id=AGENT)
     assert ev.payload["gen_ai.request.model"] == "gemini-2.5-pro"
     assert ev.payload["gen_ai.usage.input_tokens"] == 142
@@ -237,5 +245,3 @@ def test_invalid_parent_span_id_rejected():
     span = _good_span(parent_span_id="tooshort")
     with pytest.raises(NormaliserError, match="16 lowercase"):
         normalise_otel_span(span, tenant_id=TENANT, agent_id=AGENT)
-
-

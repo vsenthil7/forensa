@@ -1,14 +1,14 @@
 """Tests for PolicyBundle schema model — 100% branch coverage."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
 
 from packages.schema.policy_bundle import PolicyBundle
-
 
 _GOOD_HASH = "a" * 64
 
@@ -59,7 +59,7 @@ def test_policy_bundle_rejects_bad_content_hash(bad_hash):
 
 def test_policy_bundle_explicit_id_and_created_at():
     pid = uuid4()
-    ts = datetime(2026, 5, 13, 8, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 5, 13, 8, 0, tzinfo=UTC)
     pb = PolicyBundle(id=pid, created_at=ts, **_good())
     assert pb.id == pid
     assert pb.created_at == ts

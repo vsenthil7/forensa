@@ -1,7 +1,8 @@
 """Tests for Agent schema model — 100% branch coverage."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -42,7 +43,7 @@ def test_agent_default_status_is_active():
 
 def test_agent_explicit_uuid_and_timestamp():
     aid = uuid4()
-    ts = datetime(2026, 5, 13, 8, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 5, 13, 8, 0, tzinfo=UTC)
     a = Agent(id=aid, created_at=ts, **_good_kwargs())
     assert a.id == aid
     assert a.created_at == ts

@@ -3,6 +3,7 @@
 Mirrors the Pydantic schemas in packages.schema. Append-only by design:
 no UPDATE or DELETE statements should ever target receipts or events.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -19,7 +20,8 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -36,7 +38,7 @@ class TenantRow(Base):
     signing_key_id: Mapped[str] = mapped_column(String(128), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
-    agents: Mapped[list["AgentRow"]] = relationship(back_populates="tenant")
+    agents: Mapped[list[AgentRow]] = relationship(back_populates="tenant")
 
 
 class AgentRow(Base):

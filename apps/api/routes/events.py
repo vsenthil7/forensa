@@ -4,9 +4,10 @@ Phase 1 (this unit): validates incoming events against the Event Pydantic
 schema and returns 202 Accepted with the event id. No DB persistence yet —
 that lands in Unit 8 with the normaliser + ingest pipeline.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Response, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -18,6 +19,7 @@ router = APIRouter(prefix="/v1", tags=["events"])
 
 class EventAcceptedResponse(BaseModel):
     """Returned by POST /v1/events on successful validation."""
+
     model_config = ConfigDict(extra="forbid")
 
     event_id: str = Field(..., description="UUID of the accepted event")
@@ -41,6 +43,5 @@ async def submit_event(event: Event, response: Response) -> EventAcceptedRespons
     response.headers["X-Forensa-Event-Id"] = str(event.id)
     return EventAcceptedResponse(
         event_id=str(event.id),
-        accepted_at=datetime.now(timezone.utc),
+        accepted_at=datetime.now(UTC),
     )
-

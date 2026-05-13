@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 from fastapi import FastAPI, status
 from fastapi.responses import ORJSONResponse
@@ -49,4 +49,4 @@ def run() -> None:  # pragma: no cover
     """Poetry script entrypoint: `poetry run forensa-api`."""
     import uvicorn
 
-    uvicorn.run("apps.api.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("apps.api.main:app", host="0.0.0.0", port=8000, reload=True)  # nosec B104

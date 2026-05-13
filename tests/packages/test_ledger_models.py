@@ -1,4 +1,5 @@
 """Tests for ledger ORM models — verifies metadata, columns, constraints, indexes."""
+
 from __future__ import annotations
 
 from sqlalchemy import inspect
@@ -117,9 +118,9 @@ def test_all_datetime_columns_are_timezone_aware():
             type_str = str(col.type)
             if "DATETIME" in type_str.upper() or "TIMESTAMP" in type_str.upper():
                 # SQLAlchemy 2.0: timezone=True manifests in repr
-                assert "TZ=True" in repr(col.type) or "timezone=True" in repr(col.type), (
-                    f"{table.name}.{col.name} must be timezone=True"
-                )
+                assert "TZ=True" in repr(col.type) or "timezone=True" in repr(
+                    col.type
+                ), f"{table.name}.{col.name} must be timezone=True"
 
 
 def test_tenant_agents_relationship():

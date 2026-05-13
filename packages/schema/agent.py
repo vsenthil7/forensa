@@ -7,7 +7,7 @@ are recorded into the Forensa evidence ledger. One agent = one identity key.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from uuid import UUID, uuid4
 
@@ -42,7 +42,7 @@ class Agent(BaseModel):
     )
     status: AgentStatus = Field(default=AgentStatus.ACTIVE)
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
     )
 
     @field_validator("slug")

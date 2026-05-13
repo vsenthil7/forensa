@@ -1,4 +1,4 @@
-# Forensa .gitignore — pattern carried from Verixa with Forensa additions
+# Forensa .gitignore â€” pattern carried from Verixa with Forensa additions
 
 # Python
 __pycache__/
@@ -29,6 +29,8 @@ htmlcov/
 .ruff_cache/
 .mypy_cache/
 coverage.xml
+coverage/
+apps/console/coverage/
 
 # Node / pnpm
 node_modules/
@@ -71,7 +73,7 @@ logs/
 *.log
 src/logs/
 
-# Secrets — NEVER commit
+# Secrets â€” NEVER commit
 .env
 .env.local
 .env.*.local

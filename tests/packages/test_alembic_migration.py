@@ -3,6 +3,7 @@
 Runs alembic upgrade head --sql offline and asserts every expected table,
 index, FK, and constraint is present. Pure offline test: no DB needed.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -77,7 +78,9 @@ def test_all_fks_use_restrict_ondelete(migration_sql):
     """Append-only ledger: no cascading deletes."""
     # Every ForeignKey in the migration should use ON DELETE RESTRICT
     fk_lines = [ln for ln in migration_sql.splitlines() if "FOREIGN KEY" in ln]
-    assert len(fk_lines) >= 6  # tenant_id in agents,pb,events,receipts + agent_id + event_id + pb_id
+    assert (
+        len(fk_lines) >= 6
+    )  # tenant_id in agents,pb,events,receipts + agent_id + event_id + pb_id
     for ln in fk_lines:
         assert "ON DELETE RESTRICT" in ln, f"FK without RESTRICT: {ln}"
 
@@ -92,5 +95,7 @@ def test_timezone_aware_datetimes(migration_sql):
     """All datetime columns must be TIMESTAMP WITH TIME ZONE."""
     assert "TIMESTAMP WITH TIME ZONE NOT NULL" in migration_sql
     # No naive timestamps should exist
-    assert "TIMESTAMP NOT NULL" not in migration_sql or "TIMESTAMP WITH TIME ZONE NOT NULL" in migration_sql
-
+    assert (
+        "TIMESTAMP NOT NULL" not in migration_sql
+        or "TIMESTAMP WITH TIME ZONE NOT NULL" in migration_sql
+    )

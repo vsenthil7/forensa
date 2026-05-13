@@ -7,7 +7,7 @@ action gets evaluated against. Policy version is part of every Receipt.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -27,7 +27,7 @@ class PolicyBundle(BaseModel):
     version: str = Field(..., max_length=64)
     content_hash: str = Field(...)
     content: dict[str, Any] = Field(...)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @field_validator("version")
     @classmethod
@@ -45,7 +45,7 @@ class PolicyBundle(BaseModel):
 
     @field_validator("created_at")
     @classmethod
-    def _require_tz(cls, v):
+    def _require_tz(cls, v: datetime) -> datetime:
         if v.tzinfo is None:
             raise ValueError("created_at must be timezone-aware (UTC)")
         return v

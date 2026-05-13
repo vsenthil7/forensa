@@ -1,9 +1,13 @@
 """Tests for Tenant schema model."""
+
 from __future__ import annotations
-from datetime import datetime, timezone
+
+from datetime import UTC, datetime
 from uuid import uuid4
+
 import pytest
 from pydantic import ValidationError
+
 from packages.schema.tenant import Tenant
 
 
@@ -18,7 +22,7 @@ def test_tenant_minimal_valid_construction():
 
 def test_tenant_explicit_uuid_and_timestamp():
     tid = uuid4()
-    ts = datetime(2026, 5, 13, 8, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 5, 13, 8, 0, tzinfo=UTC)
     t = Tenant(id=tid, slug="acme", display_name="X", signing_key_id="k", created_at=ts)
     assert t.id == tid
     assert t.created_at == ts
@@ -40,7 +44,12 @@ def test_tenant_rejects_invalid_slug(bad_slug):
 
 def test_tenant_rejects_naive_created_at():
     with pytest.raises(ValidationError) as exc_info:
-        Tenant(slug="acme", display_name="X", signing_key_id="k", created_at=datetime(2026, 5, 13, 8, 0))
+        Tenant(
+            slug="acme",
+            display_name="X",
+            signing_key_id="k",
+            created_at=datetime(2026, 5, 13, 8, 0),
+        )
     assert "timezone-aware" in str(exc_info.value)
 
 

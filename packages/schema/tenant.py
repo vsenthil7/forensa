@@ -7,7 +7,7 @@ and cryptographic signing keys. One tenant = one Ed25519 signing keypair.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -39,7 +39,7 @@ class Tenant(BaseModel):
         max_length=128,
     )
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
     )
 
     @field_validator("slug")

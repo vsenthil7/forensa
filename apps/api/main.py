@@ -8,6 +8,7 @@ from fastapi import FastAPI, status
 from fastapi.responses import ORJSONResponse
 
 from apps.api.routes import events as events_routes
+from apps.api.routes import receipts as receipts_routes
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ def create_app() -> FastAPI:
         return {"status": "ok", "version": __version__}
 
     app.include_router(events_routes.router)
+    app.include_router(receipts_routes.router)
 
     return app
 

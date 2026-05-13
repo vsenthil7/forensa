@@ -113,6 +113,47 @@ async def write_event_with_receipt(
     return snapshot_id
 
 
+async def list_receipts_for_tenant(
+    session: AsyncSession,
+    tenant_id: UUID,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[Receipt]:
+    """Return a page of Receipts for a tenant, newest first by sequence DESC.
+
+    Used by the console /receipts list view. Sorted by sequence DESC so the
+    most recently issued Receipt is first; the (tenant_id, sequence) unique
+    index makes this a cheap index scan.
+    """
+    from sqlalchemy import select
+
+    stmt = (
+        select(ReceiptRow)
+        .where(ReceiptRow.tenant_id == tenant_id)
+        .order_by(ReceiptRow.sequence.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    result = await session.execute(stmt)
+    rows = result.scalars().all()
+    return [
+        Receipt(
+            id=row.id,
+            tenant_id=row.tenant_id,
+            event_id=row.event_id,
+            policy_bundle_id=row.policy_bundle_id,
+            sequence=row.sequence,
+            prev_receipt_hash=row.prev_receipt_hash,
+            payload_hash=row.payload_hash,
+            receipt_hash=row.receipt_hash,
+            signature=row.signature,
+            signed_at=row.signed_at,
+        )
+        for row in rows
+    ]
+
+
 async def get_latest_receipt_for_tenant(
     session: AsyncSession,
     tenant_id: UUID,

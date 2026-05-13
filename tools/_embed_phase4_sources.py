@@ -1,8 +1,9 @@
-﻿"""Append source code and test-level split to each phase{N}_DONE.md.
+"""Append source code and test-level split to each phase{N}_DONE.md.
 
 Idempotent: if the marker '## Source code embedded' already exists in a target,
 that phase is skipped.
 """
+
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -49,11 +50,26 @@ Coverage by source module after Phase 1:
 """,
         [
             ("CP1.1", "Production code (hash.py)", "packages/crypto/hash.py", "python"),
-            ("CP1.1", "Test script (test_crypto_hash.py)", "tests/packages/test_crypto_hash.py", "python"),
+            (
+                "CP1.1",
+                "Test script (test_crypto_hash.py)",
+                "tests/packages/test_crypto_hash.py",
+                "python",
+            ),
             ("CP1.2", "Production code (sign.py)", "packages/crypto/sign.py", "python"),
-            ("CP1.2", "Test script (test_crypto_sign.py)", "tests/packages/test_crypto_sign.py", "python"),
+            (
+                "CP1.2",
+                "Test script (test_crypto_sign.py)",
+                "tests/packages/test_crypto_sign.py",
+                "python",
+            ),
             ("CP1.3", "Production code (merkle.py)", "packages/crypto/merkle.py", "python"),
-            ("CP1.3", "Test script (test_crypto_merkle.py)", "tests/packages/test_crypto_merkle.py", "python"),
+            (
+                "CP1.3",
+                "Test script (test_crypto_merkle.py)",
+                "tests/packages/test_crypto_merkle.py",
+                "python",
+            ),
         ],
     ),
     2: (
@@ -75,10 +91,30 @@ Coverage by source module after Phase 2:
 | packages/policy/bundle_builder.py | ~100 | 44 | 10 | 100pct | 100pct | tests/packages/test_bundle_builder.py |
 """,
         [
-            ("CP2.1-2.3", "Production code (lobstertrap.py)", "packages/policy/lobstertrap.py", "python"),
-            ("CP2.1-2.3", "Test script (test_lobstertrap.py)", "tests/packages/test_lobstertrap.py", "python"),
-            ("CP2.4", "Production code (bundle_builder.py)", "packages/policy/bundle_builder.py", "python"),
-            ("CP2.4", "Test script (test_bundle_builder.py)", "tests/packages/test_bundle_builder.py", "python"),
+            (
+                "CP2.1-2.3",
+                "Production code (lobstertrap.py)",
+                "packages/policy/lobstertrap.py",
+                "python",
+            ),
+            (
+                "CP2.1-2.3",
+                "Test script (test_lobstertrap.py)",
+                "tests/packages/test_lobstertrap.py",
+                "python",
+            ),
+            (
+                "CP2.4",
+                "Production code (bundle_builder.py)",
+                "packages/policy/bundle_builder.py",
+                "python",
+            ),
+            (
+                "CP2.4",
+                "Test script (test_bundle_builder.py)",
+                "tests/packages/test_bundle_builder.py",
+                "python",
+            ),
         ],
     ),
     3: (
@@ -103,10 +139,30 @@ Coverage by source module after Phase 3:
 """,
         [
             ("CP3.1", "Production code (snapshot.py)", "packages/policy/snapshot.py", "python"),
-            ("CP3.1", "Test script (test_snapshot.py)", "tests/packages/test_snapshot.py", "python"),
-            ("CP3.2", "Production code (models.py - PolicySnapshotRow + ReceiptRow.policy_snapshot_id FK)", "packages/ledger/models.py", "python"),
-            ("CP3.2", "Alembic migration (0002_policy_snapshot)", "alembic/versions/20260513_2055_policy_snapshot.py", "python"),
-            ("CP3.2", "Test script (test_alembic_migration.py)", "tests/packages/test_alembic_migration.py", "python"),
+            (
+                "CP3.1",
+                "Test script (test_snapshot.py)",
+                "tests/packages/test_snapshot.py",
+                "python",
+            ),
+            (
+                "CP3.2",
+                "Production code (models.py - PolicySnapshotRow + ReceiptRow.policy_snapshot_id FK)",
+                "packages/ledger/models.py",
+                "python",
+            ),
+            (
+                "CP3.2",
+                "Alembic migration (0002_policy_snapshot)",
+                "alembic/versions/20260513_2055_policy_snapshot.py",
+                "python",
+            ),
+            (
+                "CP3.2",
+                "Test script (test_alembic_migration.py)",
+                "tests/packages/test_alembic_migration.py",
+                "python",
+            ),
             ("CP3.3", "Production code (replay.py)", "packages/policy/replay.py", "python"),
             ("CP3.3", "Test script (test_replay.py)", "tests/packages/test_replay.py", "python"),
         ],

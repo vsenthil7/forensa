@@ -86,6 +86,43 @@ class PolicyBundleRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class PolicySnapshotRow(Base):
+    """BR-04: ingest-time bind of (policy bundle state, verdict produced).
+
+    Captures the exact policy_bundle.content_hash that was active when an event
+    was ingested, even if the bundle itself is later replaced or rebuilt. Every
+    Receipt links to a PolicySnapshot via FK so replay can use the snapshot's
+    content_hash rather than whatever the live bundle currently shows.
+    """
+
+    __tablename__ = "policy_snapshots"
+    __table_args__ = (
+        CheckConstraint(
+            "verdict_decision IN ('allow', 'deny', 'escalate')",
+            name="ck_policy_snapshots_decision",
+        ),
+        Index("ix_policy_snapshots_bundle", "policy_bundle_id"),
+        Index("ix_policy_snapshots_tenant_captured", "tenant_id", "captured_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    tenant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("tenants.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    policy_bundle_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("policy_bundles.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    policy_bundle_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    verdict_decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    verdict_reason: Mapped[str] = mapped_column(String(512), nullable=False)
+
+
 class EventRow(Base):
     __tablename__ = "events"
     __table_args__ = (
@@ -138,6 +175,11 @@ class ReceiptRow(Base):
     policy_bundle_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("policy_bundles.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    policy_snapshot_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("policy_snapshots.id", ondelete="RESTRICT"),
         nullable=False,
     )
     sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)

@@ -28,7 +28,14 @@ def migration_sql() -> str:
     return result.stdout
 
 
-EXPECTED_TABLES = ["tenants", "agents", "policy_bundles", "events", "receipts"]
+EXPECTED_TABLES = [
+    "tenants",
+    "agents",
+    "policy_bundles",
+    "policy_snapshots",
+    "events",
+    "receipts",
+]
 
 
 @pytest.mark.parametrize("table", EXPECTED_TABLES)
@@ -41,10 +48,14 @@ EXPECTED_INDEXES = [
     "ix_agents_tenant_id",
     "ix_policy_bundles_tenant_id",
     "ix_policy_bundles_content_hash",
+    "ix_policy_snapshots_bundle",
+    "ix_policy_snapshots_tenant_captured",
+    "ix_policy_snapshots_content_hash",
     "ix_events_trace_span",
     "ix_events_tenant_occurred",
     "ix_receipts_event",
     "ix_receipts_tenant_signed",
+    "ix_receipts_policy_snapshot",
 ]
 
 
@@ -58,9 +69,11 @@ EXPECTED_CONSTRAINTS = [
     "uq_agents_tenant_slug",
     "ck_agents_status",
     "uq_policy_bundles_tenant_version",
+    "ck_policy_snapshots_decision",
     "uq_receipts_tenant_sequence",
     "uq_receipts_receipt_hash",
     "ck_receipts_sequence_nonneg",
+    "fk_receipts_policy_snapshot",
 ]
 
 
@@ -72,6 +85,7 @@ def test_constraint_created(migration_sql, constraint_name):
 def test_alembic_version_table_present(migration_sql):
     assert "alembic_version" in migration_sql
     assert "0001_initial" in migration_sql
+    assert "0002_policy_snapshot" in migration_sql
 
 
 def test_all_fks_use_restrict_ondelete(migration_sql):

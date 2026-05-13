@@ -9,6 +9,7 @@ from packages.ledger.models import (
     Base,
     EventRow,
     PolicyBundleRow,
+    PolicySnapshotRow,
     ReceiptRow,
     TenantRow,
 )
@@ -16,7 +17,14 @@ from packages.ledger.models import (
 
 def test_all_tables_registered():
     names = {t.name for t in Base.metadata.tables.values()}
-    assert names == {"tenants", "agents", "policy_bundles", "events", "receipts"}
+    assert names == {
+        "tenants",
+        "agents",
+        "policy_bundles",
+        "policy_snapshots",
+        "events",
+        "receipts",
+    }
 
 
 def test_tenant_columns():
@@ -89,6 +97,7 @@ def test_receipt_columns_and_constraints():
         "tenant_id",
         "event_id",
         "policy_bundle_id",
+        "policy_snapshot_id",
         "sequence",
         "prev_receipt_hash",
         "payload_hash",
@@ -108,7 +117,33 @@ def test_receipt_columns_and_constraints():
 
 def test_receipt_fks_to_events_and_policy_bundles():
     fks = {fk.target_fullname for fk in ReceiptRow.__table__.foreign_keys}
-    assert fks == {"tenants.id", "events.id", "policy_bundles.id"}
+    assert fks == {
+        "tenants.id",
+        "events.id",
+        "policy_bundles.id",
+        "policy_snapshots.id",
+    }
+
+
+def test_policy_snapshot_columns_constraints_indexes():
+    cols = {c.name for c in PolicySnapshotRow.__table__.columns}
+    assert cols == {
+        "id",
+        "tenant_id",
+        "policy_bundle_id",
+        "policy_bundle_version",
+        "content_hash",
+        "captured_at",
+        "verdict_decision",
+        "verdict_reason",
+    }
+    constraint_names = {c.name for c in PolicySnapshotRow.__table__.constraints if c.name}
+    assert "ck_policy_snapshots_decision" in constraint_names
+    idx_names = {ix.name for ix in PolicySnapshotRow.__table__.indexes}
+    assert "ix_policy_snapshots_bundle" in idx_names
+    assert "ix_policy_snapshots_tenant_captured" in idx_names
+    fks = {fk.target_fullname for fk in PolicySnapshotRow.__table__.foreign_keys}
+    assert fks == {"tenants.id", "policy_bundles.id"}
 
 
 def test_all_datetime_columns_are_timezone_aware():
@@ -133,4 +168,4 @@ def test_tenant_agents_relationship():
 def test_base_is_declarative():
     """Base must be a DeclarativeBase subclass; sanity ping on metadata presence."""
     assert Base.metadata is not None
-    assert len(Base.metadata.tables) == 5
+    assert len(Base.metadata.tables) == 6

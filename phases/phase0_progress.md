@@ -21,3 +21,22 @@ Commits: pending
 Tests added: 0 (CI infra fix)
 
 
+## CP0.2 - All 7 CI jobs green
+
+Run 25798493526 - SUCCESS in 6m31s
+
+- python-tests: 1m0s   (217/217 at 100pct cov)
+- typescript-tests: 16s (7/7 at 100pct cov)
+- playwright-e2e: 6m14s (2/2 E2E tests)
+- lint: 55s
+- security: 2m44s (bandit + pip-audit + pnpm-audit + gitleaks + CodeQL)
+- sbom: 1m10s
+- docker-build: 2m1s (apps/api + apps/console)
+- ci-gate: 4s
+
+Commits in phase: cce0819, bb6b0ea
+
+## CP0.3 - Phase 0 DONE
+
+Status: COMPLETE
+

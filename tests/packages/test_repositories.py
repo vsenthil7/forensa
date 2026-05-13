@@ -124,9 +124,7 @@ def test_resolve_url_returns_env_when_set(monkeypatch):
 
 def test_make_engine_returns_async_engine():
     fake_engine = MagicMock(spec=AsyncEngine)
-    with patch(
-        "packages.ledger.session.create_async_engine", return_value=fake_engine
-    ) as create:
+    with patch("packages.ledger.session.create_async_engine", return_value=fake_engine) as create:
         engine = make_engine("postgresql+asyncpg://x/y")
     assert engine is fake_engine
     create.assert_called_once()
@@ -140,9 +138,7 @@ def test_make_engine_returns_async_engine():
 def test_make_engine_uses_resolve_url_when_url_is_none(monkeypatch):
     monkeypatch.setenv("FORENSA_DB_URL", "postgresql+asyncpg://from-env/db")
     fake_engine = MagicMock(spec=AsyncEngine)
-    with patch(
-        "packages.ledger.session.create_async_engine", return_value=fake_engine
-    ) as create:
+    with patch("packages.ledger.session.create_async_engine", return_value=fake_engine) as create:
         engine = make_engine()
     assert engine is fake_engine
     args, _ = create.call_args

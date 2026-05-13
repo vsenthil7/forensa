@@ -60,8 +60,7 @@ async def write_event_with_receipt(
         )
     if receipt.event_id != event.id:
         raise ValueError(
-            "receipt.event_id does not match event.id; "
-            "refusing to persist a misaligned triple"
+            "receipt.event_id does not match event.id; " "refusing to persist a misaligned triple"
         )
 
     snapshot_id = uuid4()

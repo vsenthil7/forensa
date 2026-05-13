@@ -9,6 +9,7 @@ Canonicalisation rules:
 - Datetimes encoded as ISO-8601 with explicit timezone.
 - None is NOT a permissible input (would silently elide differences).
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -40,6 +41,7 @@ def _normalise(value: Any) -> Any:
         return value.isoformat()
     if isinstance(value, bytes):
         import base64
+
         return "base64:" + base64.b64encode(value).decode("ascii")
     if isinstance(value, set | frozenset):
         return sorted(_normalise(v) for v in value)

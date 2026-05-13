@@ -81,7 +81,7 @@ def test_normalise_bytes_base64_prefixed():
     raw = b"\x00\x01\x02hello"
     out = _norm(raw)
     assert out.startswith("base64:")
-    assert base64.b64decode(out[len("base64:"):]) == raw
+    assert base64.b64decode(out[len("base64:") :]) == raw
 
 
 def test_normalise_set_returns_sorted_list():

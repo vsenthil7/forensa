@@ -7,6 +7,8 @@ from typing import AsyncIterator
 from fastapi import FastAPI, status
 from fastapi.responses import ORJSONResponse
 
+from apps.api.routes import events as events_routes
+
 logger = logging.getLogger(__name__)
 
 __version__ = "0.1.0"
@@ -34,6 +36,8 @@ def create_app() -> FastAPI:
     async def healthz() -> dict[str, str]:
         """Liveness probe. No downstream dependencies checked."""
         return {"status": "ok", "version": __version__}
+
+    app.include_router(events_routes.router)
 
     return app
 

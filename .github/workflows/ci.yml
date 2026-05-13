@@ -153,7 +153,7 @@ jobs:
           echo $! > /tmp/uvicorn.pid
           sleep 2
       - name: Wait for API ready
-        run: npx wait-on http://localhost:8000/healthz --timeout 60000
+        run: npx wait-on http-get://localhost:8000/healthz --timeout 60000
       - name: Show uvicorn log on failure
         if: failure()
         run: cat /tmp/uvicorn.log || true

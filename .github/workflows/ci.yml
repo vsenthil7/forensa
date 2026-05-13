@@ -10,6 +10,8 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  security-events: write
+  actions: read
 
 env:
   POETRY_VERSION: '1.8.4'
@@ -146,9 +148,15 @@ jobs:
       - name: Start API in background
         env:
           FORENSA_DATABASE_URL: postgresql+asyncpg://forensa:forensa_ci@localhost:5432/forensa_e2e
-        run: poetry run uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 &
+        run: |
+          nohup poetry run uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 > /tmp/uvicorn.log 2>&1 &
+          echo $! > /tmp/uvicorn.pid
+          sleep 2
       - name: Wait for API ready
         run: npx wait-on http://localhost:8000/healthz --timeout 60000
+      - name: Show uvicorn log on failure
+        if: failure()
+        run: cat /tmp/uvicorn.log || true
       - name: Run Playwright tests
         run: pnpm --filter @forensa/console exec playwright test
       - name: Upload Playwright report

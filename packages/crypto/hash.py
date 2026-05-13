@@ -41,13 +41,13 @@ def _normalise(value: Any) -> Any:
     if isinstance(value, bytes):
         import base64
         return "base64:" + base64.b64encode(value).decode("ascii")
-    if isinstance(value, (set, frozenset)):
+    if isinstance(value, set | frozenset):
         return sorted(_normalise(v) for v in value)
     if isinstance(value, dict):
         return {str(k): _normalise(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return [_normalise(v) for v in value]
-    if isinstance(value, (str, int, float, bool)):
+    if isinstance(value, str | int | float | bool):
         return value
     raise TypeError(f"unsupported type for canonicalisation: {type(value).__name__}")
 

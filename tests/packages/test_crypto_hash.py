@@ -17,13 +17,12 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from packages.crypto.hash import _normalise as _norm
 from packages.crypto.hash import (
     canonical_json,
     sha256_bytes,
     sha256_hex,
 )
-from packages.crypto.hash import _normalise as _norm
-
 
 # ---------- canonical_json ----------
 
@@ -49,7 +48,7 @@ def test_canonical_json_no_whitespace():
 def test_canonical_json_utf8_non_ascii_preserved():
     out = canonical_json({"name": "Sen\u00e9thil"})
     # ensure_ascii=False so the original UTF-8 bytes flow through
-    assert "Sen\u00e9thil".encode("utf-8") in out
+    assert "Sen\u00e9thil".encode() in out
 
 
 # ---------- _normalise branch coverage ----------

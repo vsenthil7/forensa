@@ -113,6 +113,38 @@ async def write_event_with_receipt(
     return snapshot_id
 
 
+async def get_receipt_by_id(
+    session: AsyncSession,
+    receipt_id: UUID,
+) -> tuple[Receipt, UUID] | None:
+    """Return (Receipt, policy_snapshot_id) for a receipt id, or None if not found.
+
+    The policy_snapshot_id is returned alongside the Receipt because
+    recompute_receipt_hash needs it to verify integrity, and Receipt itself
+    does not carry that field (only policy_bundle_id).
+    """
+    from sqlalchemy import select
+
+    stmt = select(ReceiptRow).where(ReceiptRow.id == receipt_id).limit(1)
+    result = await session.execute(stmt)
+    row = result.scalar_one_or_none()
+    if row is None:
+        return None
+    receipt = Receipt(
+        id=row.id,
+        tenant_id=row.tenant_id,
+        event_id=row.event_id,
+        policy_bundle_id=row.policy_bundle_id,
+        sequence=row.sequence,
+        prev_receipt_hash=row.prev_receipt_hash,
+        payload_hash=row.payload_hash,
+        receipt_hash=row.receipt_hash,
+        signature=row.signature,
+        signed_at=row.signed_at,
+    )
+    return receipt, row.policy_snapshot_id
+
+
 async def list_receipts_for_tenant(
     session: AsyncSession,
     tenant_id: UUID,

@@ -10,11 +10,12 @@ import base64
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from packages.ledger.repositories import list_receipts_for_tenant
+from packages.ledger.receipt_builder import recompute_receipt_hash
+from packages.ledger.repositories import get_receipt_by_id, list_receipts_for_tenant
 from packages.schema.receipt import Receipt
 
 router = APIRouter(prefix="/v1", tags=["receipts"])
@@ -64,6 +65,32 @@ class ReceiptListResponse(BaseModel):
     count: int = Field(..., description="Number of items in this page (le limit)")
 
 
+class ReceiptDetailResponse(BaseModel):
+    """Full receipt detail with integrity-verification fields."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    tenant_id: UUID
+    event_id: UUID
+    policy_bundle_id: UUID
+    policy_snapshot_id: UUID
+    sequence: int
+    prev_receipt_hash: str | None
+    payload_hash: str
+    receipt_hash: str
+    signature_b64: str = Field(..., description="Ed25519 signature, base64-encoded")
+    signed_at: datetime
+    recomputed_receipt_hash: str = Field(
+        ...,
+        description="recompute_receipt_hash(receipt, snap_id); equals receipt_hash iff untampered",
+    )
+    integrity_ok: bool = Field(
+        ...,
+        description="True iff recomputed_receipt_hash matches stored receipt_hash",
+    )
+
+
 # Dependency factory - real wiring happens in app factory.
 # Tests override this via app.dependency_overrides.
 async def get_session() -> AsyncSession:  # pragma: no cover
@@ -91,4 +118,43 @@ async def list_receipts(
         limit=limit,
         offset=offset,
         count=len(items),
+    )
+
+
+@router.get(
+    "/receipts/{receipt_id}",
+    status_code=status.HTTP_200_OK,
+    response_model=ReceiptDetailResponse,
+    summary="Fetch one Receipt by id and verify chain integrity",
+    responses={404: {"description": "Receipt not found"}},
+)
+async def get_receipt(
+    receipt_id: UUID,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> ReceiptDetailResponse:
+    """Return full Receipt detail plus a live integrity check.
+
+    The recomputed_receipt_hash is computed from the stored fields and the
+    snapshot id; if it does not equal the stored receipt_hash, integrity_ok
+    is False and the row should be treated as tampered.
+    """
+    found = await get_receipt_by_id(session, receipt_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+    receipt, snapshot_id = found
+    recomputed = recompute_receipt_hash(receipt, snapshot_id)
+    return ReceiptDetailResponse(
+        id=receipt.id,
+        tenant_id=receipt.tenant_id,
+        event_id=receipt.event_id,
+        policy_bundle_id=receipt.policy_bundle_id,
+        policy_snapshot_id=snapshot_id,
+        sequence=receipt.sequence,
+        prev_receipt_hash=receipt.prev_receipt_hash,
+        payload_hash=receipt.payload_hash,
+        receipt_hash=receipt.receipt_hash,
+        signature_b64=base64.b64encode(receipt.signature).decode("ascii"),
+        signed_at=receipt.signed_at,
+        recomputed_receipt_hash=recomputed,
+        integrity_ok=(recomputed == receipt.receipt_hash),
     )

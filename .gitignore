@@ -109,3 +109,6 @@ dossiers/
 test-dossiers/
 sample-evidence/*.pdf
 sample-evidence/*.json.signed
+
+# Claude FILE BACKUP RULE artefacts (local-only, never committed)
+_backup/

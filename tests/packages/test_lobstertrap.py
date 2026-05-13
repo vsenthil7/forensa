@@ -34,6 +34,20 @@ _BUNDLE_ID = UUID("11111111-1111-1111-1111-111111111111")
 _TENANT_ID = UUID("22222222-2222-2222-2222-222222222222")
 
 
+def _run(coro):
+    """Run a coroutine in a fresh loop and close cleanly.
+
+    Avoids unraisable-exception warnings that `asyncio.run` emits when called
+    repeatedly under hypothesis on Linux/CPython 3.12 (selector socket FDs
+    surviving past loop teardown).
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 # ---------- PolicyDecision ----------
 
 
@@ -136,33 +150,33 @@ def _mock(**over) -> MockLobsterTrapClient:
 
 def test_mock_allow_for_unrecognised_kind():
     mock = _mock()
-    v = asyncio.run(mock.evaluate(_TENANT_ID, {"kind": "anything_else"}))
+    v = _run(mock.evaluate(_TENANT_ID, {"kind": "anything_else"}))
     assert v.decision is PolicyDecision.ALLOW
     assert "no matching" in v.reason
 
 
 def test_mock_allow_when_no_kind_field():
     mock = _mock()
-    v = asyncio.run(mock.evaluate(_TENANT_ID, {"other": "field"}))
+    v = _run(mock.evaluate(_TENANT_ID, {"other": "field"}))
     assert v.decision is PolicyDecision.ALLOW
 
 
 def test_mock_deny_for_deny_kind():
     mock = _mock()
-    v = asyncio.run(mock.evaluate(_TENANT_ID, {"kind": "deny_kind"}))
+    v = _run(mock.evaluate(_TENANT_ID, {"kind": "deny_kind"}))
     assert v.decision is PolicyDecision.DENY
     assert v.reason == "matched rule deny_kind"
 
 
 def test_mock_escalate_for_escalate_kind():
     mock = _mock()
-    v = asyncio.run(mock.evaluate(_TENANT_ID, {"kind": "escalate_kind"}))
+    v = _run(mock.evaluate(_TENANT_ID, {"kind": "escalate_kind"}))
     assert v.decision is PolicyDecision.ESCALATE
 
 
 def test_mock_binds_policy_bundle_into_verdict():
     mock = _mock(policy_bundle_version="2.1.0")
-    v = asyncio.run(mock.evaluate(_TENANT_ID, {"kind": "x"}))
+    v = _run(mock.evaluate(_TENANT_ID, {"kind": "x"}))
     assert v.policy_bundle_id == _BUNDLE_ID
     assert v.policy_bundle_version == "2.1.0"
     assert v.content_hash == mock.content_hash
@@ -189,7 +203,7 @@ def test_mock_rejects_negative_latency():
 def test_mock_applies_latency_when_positive():
     mock = _mock(latency_ms=20)
     start = time.perf_counter()
-    asyncio.run(mock.evaluate(_TENANT_ID, {"kind": "x"}))
+    _run(mock.evaluate(_TENANT_ID, {"kind": "x"}))
     elapsed_ms = (time.perf_counter() - start) * 1000
     assert elapsed_ms >= 18  # allow scheduler slack
 
@@ -197,7 +211,7 @@ def test_mock_applies_latency_when_positive():
 def test_mock_rejects_non_dict_action():
     mock = _mock()
     with pytest.raises(TypeError, match="action must be a dict"):
-        asyncio.run(mock.evaluate(_TENANT_ID, "not a dict"))  # type: ignore[arg-type]
+        _run(mock.evaluate(_TENANT_ID, "not a dict"))  # type: ignore[arg-type]
 
 
 # ---------- LobsterTrapError ----------
@@ -219,8 +233,8 @@ def test_mock_decision_is_deterministic_per_kind(kind):
     """For a fixed kind, the mock always returns the same decision."""
     mock_a = _mock()
     mock_b = _mock()
-    va = asyncio.run(mock_a.evaluate(_TENANT_ID, {"kind": kind}))
-    vb = asyncio.run(mock_b.evaluate(_TENANT_ID, {"kind": kind}))
+    va = _run(mock_a.evaluate(_TENANT_ID, {"kind": kind}))
+    vb = _run(mock_b.evaluate(_TENANT_ID, {"kind": kind}))
     assert va.decision is vb.decision
     assert va.content_hash == vb.content_hash
 
@@ -229,6 +243,6 @@ def test_mock_decision_is_deterministic_per_kind(kind):
 def test_mock_verdict_always_bound_to_bundle(kind_text):
     """Every verdict carries the configured policy_bundle_id and version."""
     mock = _mock(policy_bundle_version="9.9.9")
-    v = asyncio.run(mock.evaluate(_TENANT_ID, {"kind": kind_text}))
+    v = _run(mock.evaluate(_TENANT_ID, {"kind": kind_text}))
     assert v.policy_bundle_id == _BUNDLE_ID
     assert v.policy_bundle_version == "9.9.9"

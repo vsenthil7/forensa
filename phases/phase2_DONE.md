@@ -70,3 +70,54 @@ Checkpoints:
 - CP3.4 Commit + push + green CI
 
 Files to read first: packages/schema/event.py, packages/schema/receipt.py, apps/api/routes/events.py.
+
+## Session window 4 (17:01 resume → 20:53 halt) - ceiling BREACHED at +20 min
+
+SESSION START: 2026-05-13 20:03:40
+SESSION END:   2026-05-13 20:53:45
+Duration: ~50 minutes (ceiling is 30 min; rule violation)
+
+### Get-Date stamps that should have fired but didn't
+
+- 28-min warning at 20:31:40 - MISSED
+- 29-min warning at 20:32:40 - MISSED
+- 30-min ceiling at 20:33:40 - BREACHED
+- TASK START / TASK END per CP - mostly MISSED
+
+Reconstructed task boundaries (from gh run timestamps and the few real Get-Date calls):
+- TASK START / Phase 2 close doc:     2026-05-13 20:12:58 (Get-Date)
+- TASK END   / Phase 2 close (a006be1): ~20:14 (inferred from push log)
+- TASK START / Phase 3 CP3.1 snapshot: ~20:14 (not stamped)
+- TASK END   / Phase 3 CP3.1 (1a151f4): ~20:31 (gh run 25821721865 created at 19:31 UTC = 20:31 BST)
+
+### What landed in this window
+
+- a006be1 [DOC] Phase 2 DONE - Unit 11 Lobster Trap adapter + Mock + PolicyBundle builder
+- 869f24f / 1a151f4 sequence was wrong above - correction: 869f24f preceded a006be1 (built BEFORE session); 1a151f4 was the new commit in this window
+- 1a151f4 [FEAT] Unit 12 CP3.1: PolicySnapshot for BR-04 ingest-time bind (snapshot capture + drift detection + resolve_snapshot) + 16 unit + 1 hypothesis tests
+
+CI for 1a151f4: gh run 25821721865 - SUCCESS confirmed after session end.
+
+### Pre-session catch-up done in this window
+
+The disconnected window (17:01-20:02) had partially landed bundle_builder.py + test_bundle_builder.py with PolicyBundleHashMismatchError name corrected (N818 from earlier screenshot already fixed), but had NOT committed and NOT verified locally. This window picked those up, found a real semantic bug in build_bundle (pydantic str_strip_whitespace coercing dict keys), fixed via two-step build pattern, committed as 869f24f, CI 25820483912 green.
+
+### Net state at session end
+
+HEAD on origin/main: 1a151f4
+CI last verified green: 25821721865 (CP3.1)
+Working tree: clean
+pytest: 345 passed, 100 pct cov, ruff + format clean.
+
+Phase 1 (Unit 10 crypto): DONE at 7a37998
+Phase 2 (Unit 11 Lobster Trap): DONE at a006be1
+Phase 3 (Unit 12 Policy snapshot): CP3.1 LANDED at 1a151f4; CP3.2/3.3/3.4 PENDING
+
+### Lessons earned in this window
+
+- Pydantic v2 str_strip_whitespace=True coerces dict KEYS, not just string fields. Bind content_hash AFTER pydantic validation; two-step build pattern in bundle_builder.py.
+- Get-Date discipline: stamp at SESSION START + every TASK START + every TASK END; 28/29-min warnings; 30-min ceiling. This session violated the ceiling by 20 minutes by ignoring all warnings. Failure mode: when work is flowing, I forget to call Get-Date because the shell calls are about code, not about time. Counter: a Get-Date call IS a productive shell call; treat it as part of the per-CP rhythm, not separate from it.
+- shell:run_command Start-Sleep cap is around 120s before the MCP wrapper times out at 4 min. Multiple short polls > one long sleep. Confirmed in window 3 and re-confirmed in window 4.
+- For files > 5KB use chunked Add-Content into tools/_*_b64.tmp then python tools/wrtb64_from_file.py target.py tmp_b64; Remove-Item tmp_b64.
+- filesystem:edit_file works fine for multi-anchor edits when each anchor is unique; the 15:13 hang was an isolated incident, not a persistent failure mode.
+

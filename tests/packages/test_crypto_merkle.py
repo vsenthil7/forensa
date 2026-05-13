@@ -28,7 +28,9 @@ from packages.crypto.merkle import (
 
 def test_entry_hash_is_canonical_sha256_hex():
     entry = {"sequence": 0, "payload_hash": "a" * 64, "prev_hash": None}
-    expected = sha256_hex({"sequence": 0, "payload_hash": "a" * 64, "prev_hash": None})
+    # Genesis None prev_hash is bound as the empty-string sentinel so
+    # canonical_json (which forbids None) can hash it deterministically.
+    expected = sha256_hex({"sequence": 0, "payload_hash": "a" * 64, "prev_hash": ""})
     assert entry_hash(entry) == expected
 
 

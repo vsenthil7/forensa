@@ -34,6 +34,11 @@ from packages.crypto.hash import sha256_hex
 GENESIS_PREV_HASH: str | None = None
 GENESIS_SEQUENCE = 0
 
+# Sentinel string bound into the canonical SHA-256 input when prev_hash is None.
+# canonical_json forbids None values; using a fixed sentinel keeps the bind
+# deterministic without weakening the canonical-input contract.
+_GENESIS_PREV_HASH_SENTINEL = ""
+
 
 class ChainError(ValueError):
     """Raised when an entry is malformed or violates the chain contract."""
@@ -47,11 +52,12 @@ def entry_hash(entry: dict[str, Any]) -> str:
     or not entry_hash has already been assigned.
     """
     _require_keys(entry, ("sequence", "payload_hash", "prev_hash"))
+    prev_hash = entry["prev_hash"]
     return sha256_hex(
         {
             "sequence": entry["sequence"],
             "payload_hash": entry["payload_hash"],
-            "prev_hash": entry["prev_hash"],
+            "prev_hash": _GENESIS_PREV_HASH_SENTINEL if prev_hash is None else prev_hash,
         }
     )
 

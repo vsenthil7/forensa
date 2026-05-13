@@ -185,3 +185,124 @@ async def test_list_receipts_rejects_malformed_tenant_id(app, client):
     response = await client.get("/v1/receipts?tenant_id=not-a-uuid")
     assert response.status_code == 422
     app.dependency_overrides.clear()
+
+
+# ========== CP5.3 GET /v1/receipts/{receipt_id} ==========
+
+
+def _override_session_with_single(receipt: Receipt | None, snapshot_id: UUID | None = None):
+    """Override that yields a session whose scalar_one_or_none returns one row or None."""
+    from packages.ledger.models import ReceiptRow
+
+    if receipt is None:
+        row = None
+    else:
+        row = MagicMock(spec=ReceiptRow)
+        row.id = receipt.id
+        row.tenant_id = receipt.tenant_id
+        row.event_id = receipt.event_id
+        row.policy_bundle_id = receipt.policy_bundle_id
+        row.policy_snapshot_id = snapshot_id
+        row.sequence = receipt.sequence
+        row.prev_receipt_hash = receipt.prev_receipt_hash
+        row.payload_hash = receipt.payload_hash
+        row.receipt_hash = receipt.receipt_hash
+        row.signature = receipt.signature
+        row.signed_at = receipt.signed_at
+
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none = MagicMock(return_value=row)
+
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=result_mock)
+
+    async def _override():
+        return session
+
+    return _override
+
+
+@pytest.mark.asyncio
+async def test_get_receipt_returns_404_when_not_found(app, client):
+    app.dependency_overrides[get_session] = _override_session_with_single(None)
+    response = await client.get(f"/v1/receipts/{uuid4()}")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Receipt not found"
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_receipt_returns_detail_with_integrity_ok_true_for_untampered(app, client):
+    chain = await _make_chain(1)
+    receipt = chain[0]
+    # Need the snap_id the receipt was actually built with. _make_chain made one
+    # internally and didn't return it - we have to reconstruct: any snap_id that
+    # makes recompute match. Re-run _make_chain inline to capture the snap_id.
+    bundle = build_bundle(tenant_id=_TENANT_ID, version="1.0.0", content=_SAMPLE_CONTENT)
+    mock = MockLobsterTrapClient(
+        policy_bundle_id=bundle.id,
+        policy_bundle_version=bundle.version,
+        content=bundle.content,
+    )
+    verdict = await mock.evaluate(_TENANT_ID, {"kind": "x"})
+    snap = capture_snapshot(bundle, verdict)
+    snap_id = uuid4()
+    priv, _ = generate_keypair()
+    receipt = build_receipt(
+        tenant_id=_TENANT_ID,
+        event_id=uuid4(),
+        event_payload={"step": 0},
+        policy_snapshot=snap,
+        policy_snapshot_id=snap_id,
+        prev_receipt=None,
+        tenant_signing_key=priv,
+    )
+    app.dependency_overrides[get_session] = _override_session_with_single(receipt, snap_id)
+    response = await client.get(f"/v1/receipts/{receipt.id}")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == str(receipt.id)
+    assert body["integrity_ok"] is True
+    assert body["receipt_hash"] == body["recomputed_receipt_hash"]
+    assert body["policy_snapshot_id"] == str(snap_id)
+    assert base64.b64decode(body["signature_b64"]) == receipt.signature
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_receipt_returns_integrity_ok_false_when_wrong_snapshot_id(app, client):
+    bundle = build_bundle(tenant_id=_TENANT_ID, version="1.0.0", content=_SAMPLE_CONTENT)
+    mock = MockLobsterTrapClient(
+        policy_bundle_id=bundle.id,
+        policy_bundle_version=bundle.version,
+        content=bundle.content,
+    )
+    verdict = await mock.evaluate(_TENANT_ID, {"kind": "x"})
+    snap = capture_snapshot(bundle, verdict)
+    real_snap_id = uuid4()
+    priv, _ = generate_keypair()
+    receipt = build_receipt(
+        tenant_id=_TENANT_ID,
+        event_id=uuid4(),
+        event_payload={"step": 0},
+        policy_snapshot=snap,
+        policy_snapshot_id=real_snap_id,
+        prev_receipt=None,
+        tenant_signing_key=priv,
+    )
+    wrong_snap_id = uuid4()  # different from what was bound at build time
+    app.dependency_overrides[get_session] = _override_session_with_single(receipt, wrong_snap_id)
+    response = await client.get(f"/v1/receipts/{receipt.id}")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["integrity_ok"] is False
+    assert body["receipt_hash"] != body["recomputed_receipt_hash"]
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_receipt_rejects_malformed_id(app, client):
+    app.dependency_overrides[get_session] = _override_session_with_single(None)
+    response = await client.get("/v1/receipts/not-a-uuid")
+    assert response.status_code == 422
+    app.dependency_overrides.clear()

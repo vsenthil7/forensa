@@ -55,4 +55,14 @@ describe("HealthBadge", () => {
     // No assertion failure means the cancelled branch ran without setState-after-unmount
     expect(fetcher).toHaveBeenCalled();
   });
+
+  it("cleans up when unmounted before fetch rejects", async () => {
+    let rejectIt: (e: Error) => void = () => {};
+    const fetcher = vi.fn(() => new Promise<Response>((_, rej) => { rejectIt = rej; }));
+    const { unmount } = render(<HealthBadge apiUrl="http://test.local" fetcher={fetcher as unknown as typeof fetch} />);
+    unmount();
+    rejectIt(new Error("late network failure"));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(fetcher).toHaveBeenCalled();
+  });
 });

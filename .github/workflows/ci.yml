@@ -92,7 +92,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       - name: Run vitest with coverage (100%% gate)
-        run: pnpm --filter @forensa/console vitest run --coverage
+        run: pnpm --filter @forensa/console exec vitest run --coverage
       - name: Upload coverage
         uses: actions/upload-artifact@v4
         with:
@@ -138,7 +138,7 @@ jobs:
       - name: Install Node deps
         run: pnpm install --frozen-lockfile
       - name: Install Playwright browsers
-        run: pnpm exec playwright install --with-deps chromium
+        run: pnpm --filter @forensa/console exec playwright install --with-deps chromium
       - name: Run migrations
         env:
           FORENSA_DATABASE_URL: postgresql+asyncpg://forensa:forensa_ci@localhost:5432/forensa_e2e
@@ -150,7 +150,7 @@ jobs:
       - name: Wait for API ready
         run: npx wait-on http://localhost:8000/healthz --timeout 60000
       - name: Run Playwright tests
-        run: pnpm exec playwright test
+        run: pnpm --filter @forensa/console exec playwright test
       - name: Upload Playwright report
         if: always()
         uses: actions/upload-artifact@v4
@@ -191,7 +191,7 @@ jobs:
       - name: Install Node deps
         run: pnpm install --frozen-lockfile
       - name: ESLint
-        run: pnpm --filter @forensa/console lint
+        run: pnpm --filter @forensa/console run lint
       - name: TypeScript strict check
         run: pnpm --filter @forensa/console exec tsc --noEmit
 

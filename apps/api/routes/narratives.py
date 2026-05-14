@@ -17,10 +17,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.api.narrative_selector import get_selection
 from apps.api.routes.receipts import get_session
 from packages.export.builder import build_evidence_pack
 from packages.ledger.repositories import get_receipt_by_id, list_receipts_for_tenant
-from packages.narrative.client import MockNarrativeClient, NarrativeClient, NarrativeClientError
+from packages.narrative.client import NarrativeClient, NarrativeClientError
 from packages.narrative.prompt import build_prompt, prompt_hash
 from packages.schema.receipt import Receipt
 
@@ -29,12 +30,14 @@ router = APIRouter(prefix="/v1", tags=["narratives"])
 _MAX_RECEIPTS_PER_NARRATIVE = 1000
 
 
-async def get_narrative_client() -> NarrativeClient:  # pragma: no cover
-    """Default narrative client provider. Tests override via dependency_overrides.
+async def get_narrative_client() -> NarrativeClient:
+    """Default narrative client provider.
 
-    Marked no-cover: production default; every test injects its own client.
+    Returns the module-level selection chosen at startup by
+    ``apps.api.narrative_selector.select_narrative_client``. Tests override
+    via ``app.dependency_overrides`` to inject deterministic stubs.
     """
-    return MockNarrativeClient()
+    return get_selection().client
 
 
 class NarrativeResponse(BaseModel):

@@ -18,7 +18,15 @@ async def test_healthz_returns_ok_and_version() -> None:
             resp = await client.get("/healthz")
     assert resp.status_code == 200
     body = resp.json()
-    assert body == {"status": "ok", "version": __version__}
+    # Core fields
+    assert body["status"] == "ok"
+    assert body["version"] == __version__
+    # CP9.4: narrative-client transparency exposed via /healthz so product
+    # users + procurement can see which LLM is processing their evidence.
+    assert "narrative_provider" in body
+    assert "narrative_model_id" in body
+    assert "narrative_is_fallback" in body
+    assert isinstance(body["narrative_is_fallback"], bool)
 
 
 async def test_lifespan_logs_startup_and_shutdown(caplog) -> None:

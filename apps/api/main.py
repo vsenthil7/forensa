@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, status
 from fastapi.responses import ORJSONResponse
 
+from apps.api.narrative_selector import get_selection
 from apps.api.routes import events as events_routes
 from apps.api.routes import evidence as evidence_routes
 from apps.api.routes import narratives as narratives_routes
@@ -20,7 +21,16 @@ __version__ = "0.1.0"
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application startup/shutdown hook."""
-    logger.info("forensa.api.startup", extra={"version": __version__})
+    selection = get_selection()
+    logger.info(
+        "forensa.api.startup",
+        extra={
+            "version": __version__,
+            "narrative_provider": selection.provider,
+            "narrative_model_id": selection.model_id,
+            "narrative_is_fallback": selection.is_fallback,
+        },
+    )
     yield
     logger.info("forensa.api.shutdown")
 
@@ -36,9 +46,21 @@ def create_app() -> FastAPI:
     )
 
     @app.get("/healthz", status_code=status.HTTP_200_OK)
-    async def healthz() -> dict[str, str]:
-        """Liveness probe. No downstream dependencies checked."""
-        return {"status": "ok", "version": __version__}
+    async def healthz() -> dict[str, object]:
+        """Liveness probe + narrative-client transparency.
+
+        Includes ``narrative_provider``, ``narrative_model_id``, and
+        ``narrative_is_fallback`` so product users can verify which LLM is
+        processing their evidence packs without grepping server logs.
+        """
+        selection = get_selection()
+        return {
+            "status": "ok",
+            "version": __version__,
+            "narrative_provider": selection.provider,
+            "narrative_model_id": selection.model_id,
+            "narrative_is_fallback": selection.is_fallback,
+        }
 
     app.include_router(events_routes.router)
     app.include_router(receipts_routes.router)

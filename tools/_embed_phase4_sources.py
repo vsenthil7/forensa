@@ -311,6 +311,58 @@ Coverage by source module after Phase 6:
             ),
         ],
     ),
+    7: (
+        """\
+## Test-level split per CP
+
+| CP | Functional | Negative | Parametric | Property | Total | Notes |
+|---|---:|---:|---:|---:|---:|---|
+| CP7.1 client | 4 | 2 | 0 | 0 | 6 | MockNarrativeClient async; deterministic content_hash |
+| CP7.2 prompt | 4 | 1 | 0 | 1 | 6 | EvidencePack-driven; head-5 truncation |
+| CP7.3 endpoint | 2 | 5 | 0 | 0 | 7 | Depends-injected client + session |
+| **Phase 7 total** | **10** | **8** | **0** | **1** | **+19** | pytest 441 -> 460 |
+
+Coverage by source module after Phase 7:
+
+| Module | Stmts | Branches | Cov line | Cov branch | Test file |
+|---|---:|---:|---:|---:|---|
+| packages/narrative/client.py | 32 | 4 | 100pct | 100pct | tests/packages/test_narrative.py |
+| packages/narrative/prompt.py | 16 | 4 | 100pct | 100pct | tests/packages/test_narrative.py |
+| apps/api/routes/narratives.py | 47 | 10 | 100pct | 100pct | tests/api/test_narratives_route.py |
+""",
+        [
+            (
+                "CP7.1",
+                "Production code (client.py)",
+                "packages/narrative/client.py",
+                "python",
+            ),
+            (
+                "CP7.2",
+                "Production code (prompt.py)",
+                "packages/narrative/prompt.py",
+                "python",
+            ),
+            (
+                "CP7.1 + CP7.2",
+                "Test script (test_narrative.py)",
+                "tests/packages/test_narrative.py",
+                "python",
+            ),
+            (
+                "CP7.3",
+                "Production code (narratives.py route)",
+                "apps/api/routes/narratives.py",
+                "python",
+            ),
+            (
+                "CP7.3",
+                "Test script (test_narratives_route.py)",
+                "tests/api/test_narratives_route.py",
+                "python",
+            ),
+        ],
+    ),
 }
 
 for n, (split_md, sections) in PHASES.items():

@@ -61,10 +61,14 @@ async def _make_chain(
 
 
 def _override_session_with_pairs(pairs: list[tuple[Receipt, UUID]]):
-    """Override that handles BOTH execute() calls in the route:
+    """Override that handles the single execute() call from the route.
 
-    1. list_receipts_for_tenant - returns rows
-    2. get_receipt_by_id (per pair) - returns one row at a time
+    CP9.7: the route now calls ``list_receipts_with_snapshot_for_tenant`` which
+    does a single SELECT with the (tenant_id, signed_at BETWEEN, ORDER BY
+    sequence ASC) WHERE clause. The mock returns the rows whose ``signed_at``
+    falls inside the query's window so the test stays honest about what the
+    real DB would return. The window is extracted from the compiled
+    statement's bound parameters.
     """
     from packages.ledger.models import ReceiptRow
 
@@ -83,30 +87,32 @@ def _override_session_with_pairs(pairs: list[tuple[Receipt, UUID]]):
         row.signed_at = r.signed_at
         return row
 
-    rows = [_make_row(r, sid) for r, sid in pairs]
-    by_id = {r.id: _make_row(r, sid) for r, sid in pairs}
-
-    # First call -> list query, subsequent calls -> single-row lookups
-    list_result = MagicMock()
-    scalars_mock = MagicMock()
-    scalars_mock.all = MagicMock(return_value=rows)
-    list_result.scalars = MagicMock(return_value=scalars_mock)
-
-    call_log = {"count": 0}
+    all_rows = [(r, _make_row(r, sid)) for r, sid in pairs]
 
     async def _execute(stmt):
-        call_log["count"] += 1
-        if call_log["count"] == 1:
-            return list_result
-        # Subsequent calls = get_receipt_by_id. Pull the receipt id from the stmt
-        # compiled where clause. Simpler: pop rows in order from the pairs list.
-        idx = call_log["count"] - 2
-        result = MagicMock()
-        if idx < len(pairs):
-            r, sid = pairs[idx]
-            result.scalar_one_or_none = MagicMock(return_value=by_id[r.id])
+        # Extract the signed_at window from the SELECT's compiled parameters
+        # so the mock honours the WHERE clause the real DB would apply.
+        try:
+            compiled = stmt.compile()
+            params = compiled.params
+        except Exception:  # pragma: no cover - defensive
+            params = {}
+        start = None
+        end = None
+        for v in params.values():
+            if isinstance(v, datetime):
+                if start is None or v < start:
+                    start = v
+                if end is None or v > end:
+                    end = v
+        if start is not None and end is not None:
+            in_window = [row for r, row in all_rows if start <= r.signed_at <= end]
         else:
-            result.scalar_one_or_none = MagicMock(return_value=None)
+            in_window = [row for _r, row in all_rows]
+        scalars_mock = MagicMock()
+        scalars_mock.all = MagicMock(return_value=in_window)
+        result = MagicMock()
+        result.scalars = MagicMock(return_value=scalars_mock)
         return result
 
     session = MagicMock()

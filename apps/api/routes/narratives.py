@@ -34,14 +34,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.api.narrative_selector import get_selection
 from apps.api.routes.receipts import get_session
 from packages.export.builder import build_evidence_pack
-from packages.ledger.repositories import get_receipt_by_id, list_receipts_for_tenant
+from packages.ledger.repositories import list_receipts_with_snapshot_for_tenant
 from packages.narrative.client import NarrativeClient, NarrativeClientError
 from packages.narrative.live_client import (
     NarrativeInjectionDetectedError,
     NarrativeStructuralViolationError,
 )
 from packages.narrative.prompt import build_prompt, prompt_hash
-from packages.schema.receipt import Receipt
 
 logger = logging.getLogger(__name__)
 
@@ -114,8 +113,12 @@ async def generate_narrative(
     if scope_end < scope_start:
         raise HTTPException(status_code=422, detail="scope_end must be >= scope_start")
 
-    receipts = await list_receipts_for_tenant(
-        session, tenant_id, limit=_MAX_RECEIPTS_PER_NARRATIVE + 1, offset=0
+    receipts = await list_receipts_with_snapshot_for_tenant(
+        session,
+        tenant_id,
+        scope_start=scope_start,
+        scope_end=scope_end,
+        limit=_MAX_RECEIPTS_PER_NARRATIVE + 1,
     )
     if len(receipts) > _MAX_RECEIPTS_PER_NARRATIVE:
         raise HTTPException(
@@ -126,12 +129,7 @@ async def generate_narrative(
             ),
         )
 
-    pairs: list[tuple[Receipt, UUID]] = []
-    for r in receipts:
-        if scope_start <= r.signed_at <= scope_end:
-            found = await get_receipt_by_id(session, r.id)
-            assert found is not None  # pragma: no cover  # nosec B101
-            pairs.append(found)
+    pairs = receipts
 
     pack = build_evidence_pack(
         tenant_id=tenant_id,

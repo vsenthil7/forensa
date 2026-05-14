@@ -15,7 +15,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.ledger.receipt_builder import recompute_receipt_hash
-from packages.ledger.repositories import get_receipt_by_id, list_receipts_for_tenant
+from packages.ledger.repositories import (
+    get_receipt_by_id,
+    list_receipts_for_tenant,
+    list_receipts_for_tenant_cursor,
+)
 from packages.schema.receipt import Receipt
 
 router = APIRouter(prefix="/v1", tags=["receipts"])
@@ -54,14 +58,39 @@ class ReceiptListItem(BaseModel):
 
 
 class ReceiptListResponse(BaseModel):
-    """Wrapped list response with pagination metadata."""
+    """Wrapped list response with pagination metadata.
+
+    Two pagination modes - callers pick one per call, never both:
+
+    - Cursor (preferred, O(log N) per page): pass ``before_sequence``.
+      The response includes ``next_before_sequence`` = the smallest sequence
+      in this page (or ``None`` if end of stream). Pass that back to the
+      next call to get the next page.
+    - Offset (legacy, slow past ~10K rows): pass ``offset``.
+      ``next_before_sequence`` is still populated so callers can switch
+      to cursor mode mid-stream without losing position.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     items: list[ReceiptListItem]
     tenant_id: UUID
     limit: int
-    offset: int
+    offset: int = Field(
+        ...,
+        description="Echo of the offset used to fetch this page (0 if cursor mode)",
+    )
+    before_sequence: int | None = Field(
+        None,
+        description="Echo of the before_sequence cursor used to fetch this page",
+    )
+    next_before_sequence: int | None = Field(
+        None,
+        description=(
+            "Cursor for the next page - pass as ``before_sequence`` to get"
+            " older receipts. None if this is the last page."
+        ),
+    )
     count: int = Field(..., description="Number of items in this page (le limit)")
 
 
@@ -106,17 +135,51 @@ async def get_session() -> AsyncSession:  # pragma: no cover
 async def list_receipts(
     tenant_id: UUID = Query(..., description="Tenant UUID whose receipts to list"),  # noqa: B008
     limit: int = Query(50, ge=1, le=200, description="Page size (1-200)"),
-    offset: int = Query(0, ge=0, description="Zero-based offset for pagination"),
+    offset: int = Query(
+        0,
+        ge=0,
+        description=(
+            "Zero-based offset for pagination (LEGACY - slow past ~10K rows)."
+            " Prefer ``before_sequence`` cursor for production use."
+        ),
+    ),
+    before_sequence: int | None = Query(
+        None,
+        ge=1,
+        description=(
+            "Cursor: return receipts with sequence < before_sequence."
+            " Use the ``next_before_sequence`` from a prior response."
+            " When set, ``offset`` is ignored."
+        ),
+    ),
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> ReceiptListResponse:
-    """Return up to limit Receipts for tenant_id, sorted by sequence DESC."""
-    receipts = await list_receipts_for_tenant(session, tenant_id, limit=limit, offset=offset)
+    """Return up to ``limit`` Receipts for ``tenant_id``, sorted by sequence DESC.
+
+    Cursor mode (preferred): pass ``before_sequence``. Offset mode (legacy):
+    pass ``offset``. If both are passed, cursor wins and ``offset`` is
+    echoed back as 0.
+    """
+    if before_sequence is not None:
+        receipts = await list_receipts_for_tenant_cursor(
+            session, tenant_id, limit=limit, before_sequence=before_sequence
+        )
+        echoed_offset = 0
+    else:
+        receipts = await list_receipts_for_tenant(session, tenant_id, limit=limit, offset=offset)
+        echoed_offset = offset
+
     items = [ReceiptListItem.from_receipt(r) for r in receipts]
+    # Cursor for the next page: smallest sequence in this page, or None if
+    # the page is empty (end of stream) or shorter than the limit (also end).
+    next_cursor: int | None = None if len(receipts) < limit else min(r.sequence for r in receipts)
     return ReceiptListResponse(
         items=items,
         tenant_id=tenant_id,
         limit=limit,
-        offset=offset,
+        offset=echoed_offset,
+        before_sequence=before_sequence,
+        next_before_sequence=next_cursor,
         count=len(items),
     )
 

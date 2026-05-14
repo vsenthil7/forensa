@@ -21,8 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.api.routes.receipts import get_session
 from packages.export.builder import build_evidence_pack
 from packages.export.schema import EvidencePack
-from packages.ledger.repositories import get_receipt_by_id, list_receipts_for_tenant
-from packages.schema.receipt import Receipt
+from packages.ledger.repositories import list_receipts_with_snapshot_for_tenant
 
 router = APIRouter(prefix="/v1", tags=["evidence"])
 
@@ -57,26 +56,23 @@ async def export_evidence_pack(
     if scope_end < scope_start:
         raise HTTPException(status_code=422, detail="scope_end must be >= scope_start")
 
-    receipts = await list_receipts_for_tenant(
-        session, tenant_id, limit=_MAX_RECEIPTS_PER_PACK + 1, offset=0
+    # CP9.7: single JOIN-ish query replaces the old list_receipts +
+    # per-receipt get_receipt_by_id N+1 loop. Server-side signed_at filter is
+    # applied via the (tenant_id, signed_at) composite index.
+    pairs = await list_receipts_with_snapshot_for_tenant(
+        session,
+        tenant_id,
+        scope_start=scope_start,
+        scope_end=scope_end,
+        limit=_MAX_RECEIPTS_PER_PACK + 1,
     )
-    if len(receipts) > _MAX_RECEIPTS_PER_PACK:
+    if len(pairs) > _MAX_RECEIPTS_PER_PACK:
         raise HTTPException(
             status_code=413,
             detail=(
                 f"Window contains more than {_MAX_RECEIPTS_PER_PACK} receipts;" " narrow the window"
             ),
         )
-
-    # In-window filter and snapshot_id lookup
-    pairs: list[tuple[Receipt, UUID]] = []
-    for r in receipts:
-        if scope_start <= r.signed_at <= scope_end:
-            found = await get_receipt_by_id(session, r.id)
-            # found is always not None here: receipt came from list_receipts_for_tenant
-            # for the same tenant, so the same row exists for get_receipt_by_id.
-            assert found is not None  # pragma: no cover  # nosec B101
-            pairs.append(found)
 
     return build_evidence_pack(
         tenant_id=tenant_id,

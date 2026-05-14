@@ -72,27 +72,33 @@ def _override_session_with_pairs(pairs: list[tuple[Receipt, UUID]]):
         row.signed_at = r.signed_at
         return row
 
-    rows = [_make_row(r, sid) for r, sid in pairs]
-    by_id = {r.id: _make_row(r, sid) for r, sid in pairs}
-
-    list_result = MagicMock()
-    scalars_mock = MagicMock()
-    scalars_mock.all = MagicMock(return_value=rows)
-    list_result.scalars = MagicMock(return_value=scalars_mock)
-
-    call_log = {"count": 0}
+    all_rows = [(r, _make_row(r, sid)) for r, sid in pairs]
 
     async def _execute(stmt):
-        call_log["count"] += 1
-        if call_log["count"] == 1:
-            return list_result
-        idx = call_log["count"] - 2
-        result = MagicMock()
-        if idx < len(pairs):
-            r, _sid = pairs[idx]
-            result.scalar_one_or_none = MagicMock(return_value=by_id[r.id])
+        # CP9.7: route now calls list_receipts_with_snapshot_for_tenant which
+        # filters signed_at server-side. Mock honours the WHERE clause from
+        # the compiled statement so the test reflects real DB behaviour.
+        try:
+            compiled = stmt.compile()
+            params = compiled.params
+        except Exception:  # pragma: no cover
+            params = {}
+        start = None
+        end = None
+        for v in params.values():
+            if isinstance(v, datetime):
+                if start is None or v < start:
+                    start = v
+                if end is None or v > end:
+                    end = v
+        if start is not None and end is not None:
+            in_window = [row for r, row in all_rows if start <= r.signed_at <= end]
         else:
-            result.scalar_one_or_none = MagicMock(return_value=None)
+            in_window = [row for _r, row in all_rows]
+        scalars_mock = MagicMock()
+        scalars_mock.all = MagicMock(return_value=in_window)
+        result = MagicMock()
+        result.scalars = MagicMock(return_value=scalars_mock)
         return result
 
     session = MagicMock()

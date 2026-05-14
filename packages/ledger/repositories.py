@@ -157,6 +157,10 @@ async def list_receipts_for_tenant(
     Used by the console /receipts list view. Sorted by sequence DESC so the
     most recently issued Receipt is first; the (tenant_id, sequence) unique
     index makes this a cheap index scan.
+
+    NOTE: Deep-offset pagination performs poorly past ~10K rows. New callers
+    should prefer ``list_receipts_for_tenant_cursor`` which seeks on the
+    indexed sequence column instead.
     """
     from sqlalchemy import select
 
@@ -181,6 +185,117 @@ async def list_receipts_for_tenant(
             receipt_hash=row.receipt_hash,
             signature=row.signature,
             signed_at=row.signed_at,
+        )
+        for row in rows
+    ]
+
+
+async def list_receipts_for_tenant_cursor(
+    session: AsyncSession,
+    tenant_id: UUID,
+    *,
+    limit: int = 50,
+    before_sequence: int | None = None,
+) -> list[Receipt]:
+    """Cursor-paginated receipt listing (CP9.7).
+
+    Returns up to ``limit`` Receipts for ``tenant_id``, newest first by
+    ``sequence`` DESC, seeking on the indexed ``sequence`` column instead of
+    OFFSET. This is O(log N) per page regardless of how far the caller has
+    paginated, vs OFFSET which is O(offset + limit) and degrades after ~10K
+    rows.
+
+    Pagination contract:
+
+    - First page: ``before_sequence=None`` (or omitted) -> newest ``limit`` rows.
+    - Subsequent pages: pass the smallest ``sequence`` seen on the previous
+      page as ``before_sequence`` -> the next ``limit`` rows with
+      ``sequence < before_sequence``.
+    - Empty result -> end of stream.
+
+    The ``(tenant_id, sequence)`` UNIQUE index makes the seek a single
+    index lookup; the row read is then bounded by ``limit``.
+    """
+    from sqlalchemy import select
+
+    stmt = select(ReceiptRow).where(ReceiptRow.tenant_id == tenant_id)
+    if before_sequence is not None:
+        stmt = stmt.where(ReceiptRow.sequence < before_sequence)
+    stmt = stmt.order_by(ReceiptRow.sequence.desc()).limit(limit)
+
+    result = await session.execute(stmt)
+    rows = result.scalars().all()
+    return [
+        Receipt(
+            id=row.id,
+            tenant_id=row.tenant_id,
+            event_id=row.event_id,
+            policy_bundle_id=row.policy_bundle_id,
+            sequence=row.sequence,
+            prev_receipt_hash=row.prev_receipt_hash,
+            payload_hash=row.payload_hash,
+            receipt_hash=row.receipt_hash,
+            signature=row.signature,
+            signed_at=row.signed_at,
+        )
+        for row in rows
+    ]
+
+
+async def list_receipts_with_snapshot_for_tenant(
+    session: AsyncSession,
+    tenant_id: UUID,
+    *,
+    scope_start: datetime,
+    scope_end: datetime,
+    limit: int,
+) -> list[tuple[Receipt, UUID]]:
+    """List Receipts + their snapshot_ids in one query (CP9.7 - kills N+1).
+
+    Used by ``/v1/evidence-packs`` and ``/v1/narratives`` to assemble the
+    ``(Receipt, policy_snapshot_id)`` pairs the evidence-pack builder needs.
+    Previously these endpoints did:
+
+        rows = list_receipts_for_tenant(...)
+        for r in rows:
+            found = await get_receipt_by_id(r.id)   # N+1!
+
+    Now a single query returns all pairs already filtered by the signed_at
+    window. ``limit`` is enforced server-side; the caller adds +1 if it
+    needs to detect overflow.
+
+    Both scope endpoints are inclusive. signed_at is indexed by
+    ``(tenant_id, signed_at)`` via the alembic migration.
+    """
+    from sqlalchemy import select
+
+    stmt = (
+        select(ReceiptRow)
+        .where(
+            ReceiptRow.tenant_id == tenant_id,
+            ReceiptRow.signed_at >= scope_start,
+            ReceiptRow.signed_at <= scope_end,
+        )
+        .order_by(ReceiptRow.sequence.asc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    rows = result.scalars().all()
+    return [
+        (
+            Receipt(
+                id=row.id,
+                tenant_id=row.tenant_id,
+                event_id=row.event_id,
+                policy_bundle_id=row.policy_bundle_id,
+                sequence=row.sequence,
+                prev_receipt_hash=row.prev_receipt_hash,
+                payload_hash=row.payload_hash,
+                receipt_hash=row.receipt_hash,
+                signature=row.signature,
+                signed_at=row.signed_at,
+            ),
+            row.policy_snapshot_id,
         )
         for row in rows
     ]

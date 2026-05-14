@@ -1,96 +1,96 @@
-"""Lobster Trap policy verdict adapter for Forensa.
+"""Veea Lobster Trap enforcement adapter for Forensa.
 
-The Lobster Trap is the Veea-provided runtime enforcement gateway. Forensa
-captures, evidences, and replays its verdicts; we do NOT make policy
-decisions ourselves. This module defines:
+The Lobster Trap is the Veea-provided runtime enforcement gateway. This
+module is one concrete adapter implementing
+``packages.policy.enforcement.PolicyEnforcementClient`` - the
+vendor-neutral abstraction every enforcement integration must satisfy.
 
-- PolicyDecision: enum of allow / deny / escalate
-- PolicyVerdict: an immutable dataclass with decision, policy_bundle_id,
-  policy_bundle_version, content_hash, reason, evaluated_at
-- LobsterTrapClient: abstract base for any Trap implementation
-- MockLobsterTrapClient: deterministic in-memory mock used by tests and demo
-- LobsterTrapError: raised when the Trap call fails after retries
+Vendor-neutral surface
+----------------------
 
-The Trap is treated as an external service. Real implementations will use
-httpx with retry/timeout. The mock implements the same surface so the rest
-of Forensa never branches on real-vs-mock.
+The types ``PolicyDecision``, ``PolicyVerdict``, ``PolicyEnforcementClient``,
+and ``PolicyEnforcementError`` are defined in
+``packages.policy.enforcement`` and re-exported here under both their
+canonical (vendor-neutral) names AND their legacy (Veea-named) aliases:
+
+| Canonical name            | Legacy alias        |
+|---------------------------|---------------------|
+| ``PolicyDecision``        | ``PolicyDecision``  |
+| ``PolicyVerdict``         | ``PolicyVerdict``   |
+| ``PolicyEnforcementClient`` | ``LobsterTrapClient`` |
+| ``PolicyEnforcementError``  | ``LobsterTrapError``  |
+
+Existing callers (13 test files + ``packages/policy/snapshot.py``) keep
+working unchanged. New callers should import the canonical names from
+``packages.policy.enforcement`` (or via ``packages.policy``).
+
+Concrete classes
+----------------
+
+- ``MockLobsterTrapClient``: deterministic in-memory mock used by tests
+  and demo. Surface is unchanged from the pre-CP9.5 implementation.
+- ``VeeaLobsterTrapClient``: alias for ``MockLobsterTrapClient`` until the
+  real Veea HTTP client lands. This makes the vendor-neutral abstraction
+  visible immediately while keeping a single source of truth for the
+  mock behaviour.
+
+The future real Veea HTTP client (httpx with retry/timeout/circuit-breaker)
+will replace this alias with a proper subclass; the wire-form contract
+stays identical so callers do not change.
 """
 
 from __future__ import annotations
 
 import asyncio
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from enum import Enum
+from dataclasses import dataclass
 from typing import Any, ClassVar
 from uuid import UUID
 
 from packages.crypto.hash import sha256_hex
+from packages.policy.enforcement import (
+    PolicyDecision,
+    PolicyEnforcementClient,
+    PolicyEnforcementError,
+    PolicyVerdict,
+)
+
+# ---------------------------------------------------------------------------
+# Legacy aliases - keep all existing callers working unchanged.
+# ---------------------------------------------------------------------------
+
+# `LobsterTrapClient` and `LobsterTrapError` are the legacy names; the
+# vendor-neutral names are `PolicyEnforcementClient` and
+# `PolicyEnforcementError`. Both refer to the SAME class object so
+# `isinstance(x, LobsterTrapClient)` and `isinstance(x, PolicyEnforcementClient)`
+# are equivalent.
+LobsterTrapClient = PolicyEnforcementClient
+LobsterTrapError = PolicyEnforcementError
 
 
-class PolicyDecision(str, Enum):
-    """Trap verdict outcome."""
+# `PolicyDecision`, `PolicyVerdict` are re-exported under their canonical
+# names. They are already vendor-neutral; no separate alias is needed.
 
-    ALLOW = "allow"
-    DENY = "deny"
-    ESCALATE = "escalate"
-
-
-class LobsterTrapError(RuntimeError):
-    """Raised when the Trap fails to return a verdict after retries."""
+# Module-level holders so __all__ + import * keeps the legacy names visible.
+_PolicyDecision = PolicyDecision
+_PolicyVerdict = PolicyVerdict
 
 
-@dataclass(frozen=True)
-class PolicyVerdict:
-    """An immutable Lobster Trap verdict for a single agent action.
-
-    Bound to the policy bundle that produced it (id, version, content_hash),
-    so a Receipt can prove which rules were active when the verdict fired.
-    """
-
-    decision: PolicyDecision
-    policy_bundle_id: UUID
-    policy_bundle_version: str
-    content_hash: str
-    reason: str
-    evaluated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.decision, PolicyDecision):
-            raise TypeError(f"decision must be PolicyDecision, got {type(self.decision).__name__}")
-        if self.evaluated_at.tzinfo is None:
-            raise ValueError("evaluated_at must be timezone-aware (UTC)")
-        if len(self.content_hash) != 64 or not all(
-            c in "0123456789abcdef" for c in self.content_hash
-        ):
-            raise ValueError("content_hash must be 64-char lowercase hex (SHA-256)")
-        if not self.reason:
-            raise ValueError("reason must be a non-empty string")
+# ---------------------------------------------------------------------------
+# Concrete adapters
+# ---------------------------------------------------------------------------
 
 
-class LobsterTrapClient(ABC):
-    """Abstract Trap interface. All implementations honour this contract."""
+@dataclass(frozen=False)
+class MockLobsterTrapClient(PolicyEnforcementClient):
+    """Deterministic in-memory enforcement adapter for tests and demo.
 
-    @abstractmethod
-    async def evaluate(self, tenant_id: UUID, action: dict[str, Any]) -> PolicyVerdict:
-        """Return a verdict for the given action.
-
-        Implementations may retry transient errors; surface only terminal
-        failures via LobsterTrapError.
-        """
-
-
-class MockLobsterTrapClient(LobsterTrapClient):
-    """Deterministic in-memory Trap mock.
-
-    Backed by a small ruleset keyed on the action's "kind" field:
-    - kind == "deny_kind"      -> DENY
-    - kind == "escalate_kind"  -> ESCALATE
-    - anything else            -> ALLOW
+    Backed by a small ruleset keyed on the action's ``kind`` field:
+    - ``kind == "deny_kind"``     -> DENY
+    - ``kind == "escalate_kind"`` -> ESCALATE
+    - anything else               -> ALLOW
 
     Each verdict is bound to a stable mock policy bundle so the
-    content_hash is deterministic across calls.
+    ``content_hash`` is deterministic across calls.
     """
 
     _DEFAULT_VERSION: ClassVar[str] = "1.0.0"
@@ -144,3 +144,24 @@ class MockLobsterTrapClient(LobsterTrapClient):
         if kind == "escalate_kind":
             return PolicyDecision.ESCALATE, "matched rule escalate_kind"
         return PolicyDecision.ALLOW, "no matching deny/escalate rule"
+
+
+# Vendor-neutral facade. Today this is just an alias because we don't yet
+# have a real Veea HTTP client; when one lands it replaces this alias with
+# a proper subclass of `PolicyEnforcementClient`.
+VeeaLobsterTrapClient = MockLobsterTrapClient
+
+
+__all__ = [
+    # Canonical (vendor-neutral) re-exports
+    "PolicyDecision",
+    "PolicyEnforcementClient",
+    "PolicyEnforcementError",
+    "PolicyVerdict",
+    # Legacy aliases - DO NOT remove without a deprecation cycle
+    "LobsterTrapClient",
+    "LobsterTrapError",
+    # Concrete adapters
+    "MockLobsterTrapClient",
+    "VeeaLobsterTrapClient",
+]

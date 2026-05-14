@@ -1,0 +1,70 @@
+[FEAT] CP9.16-PG-up real-Postgres integration test suite - closes 3 honest gaps from CP9.15.1 (NEW-P9.15.1.run-migration-on-pg + NEW-P9.15.partial-unique-test-on-pg + DB-level append-only triggers verification) by converting them from "claimed in commit message" to "asserted by automated tests against PostgreSQL 16.13 on every PG-enabled run"
+
+WHAT CHANGED
+============
+
+1. pyproject.toml: registered new `pg` pytest marker. Tests under tests/integration/ tag themselves with @pytest.mark.pg. The marker is registered (so --strict-markers stays happy) and documents the FORENSA_TEST_DB_URL env-var contract. No change to addopts; default coverage gate (--cov-fail-under=100) remains in force.
+
+2. tests/integration/__init__.py: new folder with docstring documenting the local-dev run instructions (docker run postgres:16 + FORENSA_TEST_DB_URL pattern).
+
+3. tests/integration/conftest.py: skip-logic and shared fixtures
+   - pytest_collection_modifyitems hook: when FORENSA_TEST_DB_URL is UNSET, every @pytest.mark.pg test is auto-skipped with a clear reason string. The default `poetry run pytest` invocation stays green on machines without Postgres and the 600 unit tests + 100% coverage gate continue to hold.
+   - When FORENSA_TEST_DB_URL IS set, the marker is consumed normally and all 14 PG-integration tests run.
+   - Fixtures: pg_url (session-scoped DSN resolution), pg_engine (per-test async engine with cleanup), pg_clean_session (per-test session yielded after TRUNCATE CASCADE of all 7 forensa tables in FK-respecting order; alembic_version is preserved so subsequent tests reuse the migrated schema), fresh_tenant_id, fresh_bundle_id, repo_root.
+
+4. tests/integration/test_pg_migrations.py: 3 tests covering migration round-trip on real PG
+   - test_upgrade_head_brings_schema_to_0004: downgrade base -> upgrade head; assert alembic_version reads 0004_bundle_approval_workflow and all 7 expected tables + partial UNIQUE index + 2 triggers exist on the live DB.
+   - test_downgrade_one_drops_0004_objects: upgrade head -> downgrade -1; assert alembic_version reads 0003_event_output and every object 0004 created (approvals table, partial UNIQUE index, 2 triggers) is gone.
+   - test_upgrade_after_downgrade_round_trip: head -> head-1 -> head; assert the full schema reinstates cleanly (catches orphan-sequence / leftover-function bugs that block re-upgrade).
+   - Alembic is invoked via subprocess (not in-process API) to keep its own asyncio loop isolated from pytest-asyncio's loop; avoids Windows event-loop reuse footguns.
+
+5. tests/integration/test_pg_append_only_triggers.py: 6 tests covering the PL/pgSQL trigger CP9.15.1 added
+   - test_insert_into_approvals_is_permitted: INSERT continues to work (append-only != write-only).
+   - test_update_to_approval_row_raises_via_trigger: UPDATE on any column of any row raises DBAPIError carrying the "policy_bundle_approvals is append-only; UPDATE is forbidden" message from the PL/pgSQL function.
+   - test_delete_of_approval_row_raises_via_trigger: DELETE on any row raises the same DBAPIError carrying the matching DELETE message.
+   - test_trigger_function_exists_in_pg_catalog: pg_proc lookup confirms forensa_block_approval_mutation() is loaded; protects against future migrations weakening the trigger by dropping just the trigger but leaving the function name unused.
+   - test_bulk_update_attempt_also_blocked: multi-row UPDATE without WHERE clause still triggers; protects against future "optimisation" weakening from FOR EACH ROW to FOR EACH STATEMENT.
+   - test_bulk_delete_attempt_also_blocked: TRUNCATE-shape DELETE without WHERE also triggers; same protection.
+
+6. tests/integration/test_pg_partial_unique_active.py: 5 tests covering the partial UNIQUE index uq_policy_bundles_one_active_per_tenant
+   - test_two_actives_same_tenant_sequential_raises: two status='active' rows for the same tenant inserted serially; second one raises IntegrityError naming the partial UNIQUE index. SQLite ignored this clause; PG enforces it.
+   - test_active_and_superseded_can_coexist: status='superseded' rows are NOT constrained by the partial index; many supersededs + one active for the same tenant is legal. Asserts the partial-WHERE clause is honoured, not just the column tuple.
+   - test_actives_on_different_tenants_both_allowed: partial UNIQUE is tenant-scoped; two tenants each with one active is fine.
+   - test_concurrent_activations_race_one_wins: two asyncio.gather'd sessions race to UPDATE different proposed bundles to active for the same tenant. Each session sleeps briefly under SELECT pg_sleep(0.05) to hold a lock-window where both reach UPDATE in flight. Result: exactly one returns 'ok', exactly one returns 'conflict' (IntegrityError on the partial UNIQUE). Verifies race-safety, not just constraint-correctness. This is the test SQLite could never run because it has neither the partial WHERE semantics nor a real concurrency model.
+   - test_supersede_then_activate_in_same_transaction: the workflow's atomic flip (UPDATE old active -> superseded; UPDATE new approved -> active) within one transaction must complete cleanly without the partial UNIQUE seeing two actives at flush time. Verifies the bundle_workflow.activate() path is race-compatible with the index.
+
+VERIFICATION DONE THIS CP (manual, before commit)
+================================================
+
+Tested against postgres:16 container (postgres:16.13 actual server) on localhost:5433 with credentials forensa/forensa/forensa:
+
+- alembic upgrade head from empty DB: all 4 migrations applied. Current rev: 0004_bundle_approval_workflow (head).
+- alembic downgrade -1: reverted to 0003_event_output. All 0004-created objects (approvals table, partial UNIQUE index, 2 triggers) removed.
+- alembic upgrade head again: clean re-application; final state matches.
+- Live schema inspection: \\dt shows all 7 tables. SELECT from information_schema.triggers shows trg_policy_bundle_approvals_block_update and trg_policy_bundle_approvals_block_delete. SELECT from pg_indexes shows uq_policy_bundles_one_active_per_tenant with the correct WHERE ((status)::text = 'active'::text) clause.
+
+WHAT'S TESTED IN AUTOMATED SUITE
+================================
+
+- Default mode (no FORENSA_TEST_DB_URL): 600 passed + 14 skipped + 100% coverage. SAME shape as pre-CP except for the 14 cleanly-skipped integration tests. No regression in unit-suite behaviour.
+- PG mode (FORENSA_TEST_DB_URL pointed at real Postgres): 614 passed; 3 consecutive flake-free runs verified.
+- ruff check: clean.
+- ruff format: clean.
+- mypy strict on packages + apps/api: clean (43 source files, no issues found).
+
+WHAT'S NOT YET DONE (tracked, NOT scope-shrunk)
+==============================================
+
+- NEW-P9.16.ci-pg-service: add a postgres:16 service container to the CI workflow so the -m pg suite runs nightly on every push to main. Today the integration tests are local-only; CI will keep running the SQLite-mode default. Worth doing as its own CP because it touches .github/workflows/ which I deliberately didn't read this session.
+- NEW-P9.16.alembic-env-var-name-mismatch: the live `.env` file uses FORENSA_DB_URL but alembic/env.py reads FORENSA_DATABASE_URL. The integration tests sidestep this by reading FORENSA_TEST_DB_URL and passing FORENSA_DATABASE_URL to the alembic subprocess, but the dev-mode env-var-name divergence should be reconciled. 30-min CP.
+- NEW-P9.16.bundle-workflow-pg-integration: the bundle_workflow.activate() logic uses a "supersede first, then activate" ordering. test_supersede_then_activate_in_same_transaction verifies the SQL pattern works; an end-to-end test driving the actual workflow API through bundle_workflow.activate() against real PG (not raw SQL) would close the loop on CP9.15.1 finding 3. Worth its own CP because it has fixture coupling with bundle_repository and ingest_service.
+
+NOTES
+=====
+
+- Container provisioned this CP: docker run -d --name forensa-pg -e POSTGRES_PASSWORD=forensa -e POSTGRES_USER=forensa -e POSTGRES_DB=forensa -p 5433:5432 postgres:16. Port 5433 (not 5432) deliberately to avoid any conflict with the auditex / swarmscout / talkproof_dev postgres containers also on this machine.
+- Docker Desktop daemon had been hung at session start (helper processes orphaned from morning launch); resolved by user closing all Docker processes via Task Manager + relaunching Desktop. Engine v29.4.0, Desktop 4.70.0. The session's "Postgres unavailable" was lazy diagnosis in the prior CP; this CP closes that excuse with a working container and a test suite that uses it.
+- pyproject.toml backed up to _backup/pyproject.toml_20260514-1939 per CLAUDE_RULES FILE BACKUP RULE before edit.
+- One bug-and-fix iteration on the trigger tests: initial draft expected sqlalchemy.exc.InternalError but asyncpg routes PL/pgSQL RAISE EXCEPTION through AsyncAdapt_asyncpg_dbapi.Error which surfaces as sqlalchemy.exc.DBAPIError. Fix: catch the broader DBAPIError, assert on the message substring. The triggers were always working; only the test expectation was wrong. Caught on the first PG-mode run and fixed before commit.
+- 614 pytest in PG mode + 600 pytest in default mode + 100% coverage; mypy strict clean; ruff + format clean; 3 consecutive flake-free runs in PG mode verified.
+- CP9.15.1's three honest gaps are now closed by automated tests rather than commit-message claims. The product Status column work proposed in CP9.16-Phase-2 is still pending and remains the next backlog priority alongside CP9.17 (Idempotency-Key) and CP9.18 (payload size limit).

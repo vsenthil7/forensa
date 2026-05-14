@@ -56,6 +56,9 @@ addopts = ["-ra", "--strict-markers", "--strict-config", "--cov=apps", "--cov=pa
 norecursedirs = ["_backup", ".git", ".venv", "__pycache__", "node_modules", "alembic"]
 python_files = ["test_*.py"]
 filterwarnings = ["error", "ignore::DeprecationWarning:pytest_asyncio"]
+markers = [
+    "pg: requires a real Postgres reachable at $FORENSA_TEST_DB_URL; auto-skipped when env var is unset. Used by tests/integration/ to verify behaviour SQLite cannot model (partial UNIQUE indexes, append-only triggers, RFC 3161 anchoring).",
+]
 
 [tool.coverage.run]
 branch = true

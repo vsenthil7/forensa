@@ -69,6 +69,9 @@ class ReceiptListResponse(BaseModel):
     - Offset (legacy, slow past ~10K rows): pass ``offset``.
       ``next_before_sequence`` is still populated so callers can switch
       to cursor mode mid-stream without losing position.
+
+    Optional ``signed_after`` / ``signed_before`` time-window filter
+    (CP9.12 / NEW-P9.8.4) combines freely with either pagination mode.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -90,6 +93,14 @@ class ReceiptListResponse(BaseModel):
             "Cursor for the next page - pass as ``before_sequence`` to get"
             " older receipts. None if this is the last page."
         ),
+    )
+    signed_after: datetime | None = Field(
+        None,
+        description="Echo of the signed_after time-window filter used (CP9.12)",
+    )
+    signed_before: datetime | None = Field(
+        None,
+        description="Echo of the signed_before time-window filter used (CP9.12)",
     )
     count: int = Field(..., description="Number of items in this page (le limit)")
 
@@ -152,6 +163,22 @@ async def list_receipts(
             " When set, ``offset`` is ignored."
         ),
     ),
+    signed_after: datetime | None = Query(  # noqa: B008
+        None,
+        description=(
+            "Time-window filter (CP9.12 / NEW-P9.8.4): only return Receipts"
+            " with ``signed_at >= signed_after``. ISO-8601, must be"
+            " timezone-aware. Inclusive lower bound."
+        ),
+    ),
+    signed_before: datetime | None = Query(  # noqa: B008
+        None,
+        description=(
+            "Time-window filter (CP9.12 / NEW-P9.8.4): only return Receipts"
+            " with ``signed_at <= signed_before``. ISO-8601, must be"
+            " timezone-aware. Inclusive upper bound."
+        ),
+    ),
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> ReceiptListResponse:
     """Return up to ``limit`` Receipts for ``tenant_id``, sorted by sequence DESC.
@@ -159,14 +186,48 @@ async def list_receipts(
     Cursor mode (preferred): pass ``before_sequence``. Offset mode (legacy):
     pass ``offset``. If both are passed, cursor wins and ``offset`` is
     echoed back as 0.
+
+    Optional ``signed_after`` / ``signed_before`` time-window filter
+    (CP9.12 / NEW-P9.8.4) combines freely with either pagination mode.
+    Returns 422 if either time is naive (no tzinfo) or if
+    ``signed_after > signed_before``.
     """
+    # Validation: timezone-awareness + ordering.
+    if signed_after is not None and signed_after.tzinfo is None:
+        raise HTTPException(
+            status_code=422,
+            detail="signed_after must be timezone-aware (ISO-8601 with offset)",
+        )
+    if signed_before is not None and signed_before.tzinfo is None:
+        raise HTTPException(
+            status_code=422,
+            detail="signed_before must be timezone-aware (ISO-8601 with offset)",
+        )
+    if signed_after is not None and signed_before is not None and signed_after > signed_before:
+        raise HTTPException(
+            status_code=422,
+            detail="signed_after must be <= signed_before",
+        )
+
     if before_sequence is not None:
         receipts = await list_receipts_for_tenant_cursor(
-            session, tenant_id, limit=limit, before_sequence=before_sequence
+            session,
+            tenant_id,
+            limit=limit,
+            before_sequence=before_sequence,
+            signed_after=signed_after,
+            signed_before=signed_before,
         )
         echoed_offset = 0
     else:
-        receipts = await list_receipts_for_tenant(session, tenant_id, limit=limit, offset=offset)
+        receipts = await list_receipts_for_tenant(
+            session,
+            tenant_id,
+            limit=limit,
+            offset=offset,
+            signed_after=signed_after,
+            signed_before=signed_before,
+        )
         echoed_offset = offset
 
     items = [ReceiptListItem.from_receipt(r) for r in receipts]
@@ -180,6 +241,8 @@ async def list_receipts(
         offset=echoed_offset,
         before_sequence=before_sequence,
         next_before_sequence=next_cursor,
+        signed_after=signed_after,
+        signed_before=signed_before,
         count=len(items),
     )
 

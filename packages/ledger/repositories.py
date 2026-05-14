@@ -160,6 +160,8 @@ async def list_receipts_for_tenant(
     *,
     limit: int = 50,
     offset: int = 0,
+    signed_after: datetime | None = None,
+    signed_before: datetime | None = None,
 ) -> list[Receipt]:
     """Return a page of Receipts for a tenant, newest first by sequence DESC.
 
@@ -167,17 +169,20 @@ async def list_receipts_for_tenant(
     most recently issued Receipt is first; the (tenant_id, sequence) unique
     index makes this a cheap index scan.
 
+    Optional ``signed_after`` / ``signed_before`` (CP9.12 / NEW-P9.8.4)
+    filter the rows on ``signed_at`` via the indexed ``(tenant_id, signed_at)``
+    index. Inclusive on both ends. ``None`` on either skips that bound.
+
     NOTE: Deep-offset pagination performs poorly past ~10K rows. New callers
     should prefer ``list_receipts_for_tenant_cursor`` which seeks on the
     indexed sequence column instead.
     """
-    stmt = (
-        select(ReceiptRow)
-        .where(ReceiptRow.tenant_id == tenant_id)
-        .order_by(ReceiptRow.sequence.desc())
-        .limit(limit)
-        .offset(offset)
-    )
+    stmt = select(ReceiptRow).where(ReceiptRow.tenant_id == tenant_id)
+    if signed_after is not None:
+        stmt = stmt.where(ReceiptRow.signed_at >= signed_after)
+    if signed_before is not None:
+        stmt = stmt.where(ReceiptRow.signed_at <= signed_before)
+    stmt = stmt.order_by(ReceiptRow.sequence.desc()).limit(limit).offset(offset)
     result = await session.execute(stmt)
     rows = result.scalars().all()
     return [
@@ -203,6 +208,8 @@ async def list_receipts_for_tenant_cursor(
     *,
     limit: int = 50,
     before_sequence: int | None = None,
+    signed_after: datetime | None = None,
+    signed_before: datetime | None = None,
 ) -> list[Receipt]:
     """Cursor-paginated receipt listing (CP9.7).
 
@@ -220,12 +227,21 @@ async def list_receipts_for_tenant_cursor(
       ``sequence < before_sequence``.
     - Empty result -> end of stream.
 
+    Optional ``signed_after`` / ``signed_before`` (CP9.12 / NEW-P9.8.4)
+    filter rows on ``signed_at`` via the indexed ``(tenant_id, signed_at)``
+    index. Inclusive on both ends. Combine freely with the ``before_sequence``
+    cursor.
+
     The ``(tenant_id, sequence)`` UNIQUE index makes the seek a single
     index lookup; the row read is then bounded by ``limit``.
     """
     stmt = select(ReceiptRow).where(ReceiptRow.tenant_id == tenant_id)
     if before_sequence is not None:
         stmt = stmt.where(ReceiptRow.sequence < before_sequence)
+    if signed_after is not None:
+        stmt = stmt.where(ReceiptRow.signed_at >= signed_after)
+    if signed_before is not None:
+        stmt = stmt.where(ReceiptRow.signed_at <= signed_before)
     stmt = stmt.order_by(ReceiptRow.sequence.desc()).limit(limit)
 
     result = await session.execute(stmt)

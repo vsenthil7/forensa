@@ -22,6 +22,7 @@ from apps.api.routes.receipts import get_session
 from packages.export.builder import build_evidence_pack
 from packages.export.schema import EvidencePack
 from packages.ledger.repositories import get_receipt_by_id, list_receipts_for_tenant
+from packages.schema.receipt import Receipt
 
 router = APIRouter(prefix="/v1", tags=["evidence"])
 
@@ -68,7 +69,7 @@ async def export_evidence_pack(
         )
 
     # In-window filter and snapshot_id lookup
-    pairs: list[tuple] = []
+    pairs: list[tuple[Receipt, UUID]] = []
     for r in receipts:
         if scope_start <= r.signed_at <= scope_end:
             found = await get_receipt_by_id(session, r.id)

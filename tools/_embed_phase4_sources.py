@@ -363,6 +363,37 @@ Coverage by source module after Phase 7:
             ),
         ],
     ),
+    8: (
+        """\
+## Test-level split per CP
+
+| CP | Functional | Negative | Parametric | Property | Total | Notes |
+|---|---:|---:|---:|---:|---:|---|
+| CP8.1 demo tabletop | 2 | 0 | 0 | 0 | 2 | 5-stage pipeline; judge-friendly banners; ALL CHECKS PASSED end state |
+| CP8.2 BR-09 load test | 2 | 0 | 0 | 0 | 2 | 1000 events / 0.155s / 6452 events per second; chain + pack integrity verified |
+| **Phase 8 total** | **4** | **0** | **0** | **0** | **+4** | pytest 460 -> 464 |
+""",
+        [
+            (
+                "CP8.1",
+                "Production code (demo_tabletop.py)",
+                "scripts/demo_tabletop.py",
+                "python",
+            ),
+            (
+                "CP8.2",
+                "Production code (load_test.py)",
+                "scripts/load_test.py",
+                "python",
+            ),
+            (
+                "CP8.1 + CP8.2",
+                "Test script (test_demo_and_load.py)",
+                "tests/scripts/test_demo_and_load.py",
+                "python",
+            ),
+        ],
+    ),
 }
 
 for n, (split_md, sections) in PHASES.items():

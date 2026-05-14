@@ -252,6 +252,65 @@ Coverage by source module after Phase 5:
             ),
         ],
     ),
+    6: (
+        """\
+## Test-level split per CP
+
+| CP | Functional | Negative | Parametric | Property | Total | Notes |
+|---|---:|---:|---:|---:|---:|---|
+| CP6.1 schema | 10 | 6 | 0 | 0 | 16 | JSON-LD @context/@type aliases + Pydantic v2 frozen |
+| CP6.2 builder | 5 | 4 | 0 | 0 | 9 | Deterministic self-verify; verify_evidence_pack |
+| CP6.3 PDF render | 0 | 0 | 0 | 0 | 0 | DEFERRED to Phase 8 polish (presentation over same JSON-LD data) |
+| CP6.4 endpoint | 2 | 4 | 0 | 0 | 6 | TestClient + dependency_overrides; 422/413/422 |
+| **Phase 6 total** | **17** | **14** | **0** | **0** | **+31** | pytest 410 -> 441 |
+
+Coverage by source module after Phase 6:
+
+| Module | Stmts | Branches | Cov line | Cov branch | Test file |
+|---|---:|---:|---:|---:|---|
+| packages/export/schema.py | 84 | 14 | 100pct | 100pct | tests/packages/test_export_schema.py |
+| packages/export/builder.py | 40 | 10 | 100pct | 100pct | tests/packages/test_export_builder.py |
+| apps/api/routes/evidence.py | 28 | 12 | 100pct | 100pct | tests/api/test_evidence_route.py |
+""",
+        [
+            (
+                "CP6.1",
+                "Production code (schema.py)",
+                "packages/export/schema.py",
+                "python",
+            ),
+            (
+                "CP6.1",
+                "Test script (test_export_schema.py)",
+                "tests/packages/test_export_schema.py",
+                "python",
+            ),
+            (
+                "CP6.2",
+                "Production code (builder.py)",
+                "packages/export/builder.py",
+                "python",
+            ),
+            (
+                "CP6.2",
+                "Test script (test_export_builder.py)",
+                "tests/packages/test_export_builder.py",
+                "python",
+            ),
+            (
+                "CP6.4",
+                "Production code (evidence.py route)",
+                "apps/api/routes/evidence.py",
+                "python",
+            ),
+            (
+                "CP6.4",
+                "Test script (test_evidence_route.py)",
+                "tests/api/test_evidence_route.py",
+                "python",
+            ),
+        ],
+    ),
 }
 
 for n, (split_md, sections) in PHASES.items():

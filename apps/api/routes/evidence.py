@@ -63,8 +63,7 @@ async def export_evidence_pack(
         raise HTTPException(
             status_code=413,
             detail=(
-                f"Window contains more than {_MAX_RECEIPTS_PER_PACK} receipts;"
-                " narrow the window"
+                f"Window contains more than {_MAX_RECEIPTS_PER_PACK} receipts;" " narrow the window"
             ),
         )
 
@@ -73,8 +72,10 @@ async def export_evidence_pack(
     for r in receipts:
         if scope_start <= r.signed_at <= scope_end:
             found = await get_receipt_by_id(session, r.id)
-            if found is not None:
-                pairs.append(found)
+            # found is always not None here: receipt came from list_receipts_for_tenant
+            # for the same tenant, so the same row exists for get_receipt_by_id.
+            assert found is not None  # pragma: no cover  # nosec B101
+            pairs.append(found)
 
     return build_evidence_pack(
         tenant_id=tenant_id,

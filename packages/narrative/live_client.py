@@ -159,7 +159,7 @@ class LiveNarrativeClient(NarrativeClient):
         timeout_seconds: float = 30.0,
         max_retries: int = 2,
         retry_backoff_seconds: float = 0.5,
-        generate_call: "Callable[[str, str, int], Awaitable[tuple[str, int, int]]] | None" = None,
+        generate_call: Callable[[str, str, int], Awaitable[tuple[str, int, int]]] | None = None,
     ) -> None:
         resolved_key = api_key if api_key is not None else os.environ.get(_ENV_VAR, "")
         if not resolved_key:
@@ -190,7 +190,7 @@ class LiveNarrativeClient(NarrativeClient):
         CP9.5 90-second demo MP4. All unit tests inject a stub via
         ``generate_call=`` in the constructor.
         """
-        import google.generativeai as genai
+        import google.generativeai as genai  # type: ignore[import-not-found]
 
         genai.configure(api_key=self._api_key)
         model = genai.GenerativeModel(
@@ -219,27 +219,21 @@ class LiveNarrativeClient(NarrativeClient):
         if max_tokens <= 0:
             raise NarrativeClientError("max_tokens must be positive")
 
-        last_exc: Exception | None = None
-        for attempt in range(self._max_retries + 1):
+        text = ""
+        prompt_tokens = 0
+        completion_tokens = 0
+        for attempt in range(self._max_retries + 1):  # pragma: no branch
             try:
                 text, prompt_tokens, completion_tokens = await self._generate_call(
                     _SYSTEM_INSTRUCTION, prompt, max_tokens
                 )
                 break
-            except (NarrativeInjectionDetectedError, NarrativeStructuralViolationError):
-                # Injection / structural - never retry, propagate immediately
-                raise
-            except Exception as exc:  # noqa: BLE001 - SDK exceptions are not typed
-                last_exc = exc
+            except Exception as exc:
                 if attempt >= self._max_retries:
                     raise NarrativeClientError(
                         f"Gemini call failed after {attempt + 1} attempt(s): {exc}"
                     ) from exc
                 await asyncio.sleep(self._retry_backoff_seconds * (attempt + 1))
-        else:  # pragma: no cover - loop always breaks or raises
-            raise NarrativeClientError(
-                f"Gemini call exhausted retries: {last_exc}"
-            )
 
         # Layer 3 - output sanitisation
         matched = _detect_injection(text)

@@ -200,9 +200,18 @@ def test_forensa_reasoning_extracted_to_event_field():
     ev = normalise_otel_span(span, tenant_id=TENANT, agent_id=AGENT)
     assert ev.reasoning == "I chose this because the user asked"
     assert "forensa.reasoning" not in ev.payload
+    # CP9.9: reasoning != output; this attribute does NOT populate `output`.
+    assert ev.output is None
 
 
-def test_genai_response_text_falls_back_to_reasoning():
+def test_genai_response_text_extracted_to_output_field_not_reasoning():
+    """CP9.9 / NEW-P9.8.21 regression: ``gen_ai.response.text`` is the model's
+    OUTPUT and must populate ``Event.output``, NOT ``Event.reasoning``.
+
+    The previous (pre-CP9.9) behaviour conflated these, which would mislead
+    investigators reading evidence packs ("the agent reasoned X" when X was
+    actually the agent's response text, not its rationale).
+    """
     span = _good_span(
         attributes={
             "gen_ai.operation.name": "chat",
@@ -210,7 +219,27 @@ def test_genai_response_text_falls_back_to_reasoning():
         }
     )
     ev = normalise_otel_span(span, tenant_id=TENANT, agent_id=AGENT)
-    assert ev.reasoning == "The answer is 42"
+    assert ev.output == "The answer is 42"
+    # Critical assertion: gen_ai.response.text must NOT leak into reasoning.
+    assert ev.reasoning is None
+    # And it should be stripped from payload (not double-stored).
+    assert "gen_ai.response.text" not in ev.payload
+
+
+def test_reasoning_and_output_can_coexist_independently():
+    """CP9.9: explicit forensa.reasoning + gen_ai.response.text populate
+    different fields (reasoning and output respectively); they don't override
+    each other."""
+    span = _good_span(
+        attributes={
+            "gen_ai.operation.name": "chat",
+            "forensa.reasoning": "I called the search tool because the user asked",
+            "gen_ai.response.text": "Here are the top three results: ...",
+        }
+    )
+    ev = normalise_otel_span(span, tenant_id=TENANT, agent_id=AGENT)
+    assert ev.reasoning == "I called the search tool because the user asked"
+    assert ev.output == "Here are the top three results: ..."
 
 
 def test_policy_fields_extracted_from_attributes():

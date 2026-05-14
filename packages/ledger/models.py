@@ -148,6 +148,7 @@ class EventRow(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     reasoning: Mapped[str | None] = mapped_column(String, nullable=True)
+    output: Mapped[str | None] = mapped_column(String, nullable=True)
     policy_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     policy_verdict: Mapped[str | None] = mapped_column(String(64), nullable=True)
 

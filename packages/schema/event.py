@@ -58,7 +58,21 @@ class Event(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     reasoning: str | None = Field(
         default=None,
-        description="Agent's chain-of-thought or rationale, if captured.",
+        description=(
+            "Agent's chain-of-thought or rationale, if captured. Populated only"
+            " from explicit ``forensa.reasoning`` OTel attribute. NOT a fallback"
+            " for ``gen_ai.response.text`` (which is the model's output, not its"
+            " reasoning - see ``output`` field). [CP9.9]"
+        ),
+    )
+    output: str | None = Field(
+        default=None,
+        description=(
+            "The model's response text, captured from ``gen_ai.response.text``."
+            " Distinct from ``reasoning``: reasoning is the agent's rationale"
+            " for taking an action; output is the textual result the model"
+            " produced. [CP9.9 - NEW-P9.8.21]"
+        ),
     )
     policy_version: str | None = Field(
         default=None,

@@ -87,6 +87,7 @@ async def write_event_with_receipt(
         occurred_at=event.occurred_at,
         payload=event.payload,
         reasoning=event.reasoning,
+        output=event.output,
         policy_version=event.policy_version,
         policy_verdict=event.policy_verdict,
     )

@@ -72,6 +72,7 @@ def test_event_columns_and_indexes():
         "occurred_at",
         "payload",
         "reasoning",
+        "output",  # CP9.9 / NEW-P9.8.21 - separate from reasoning
         "policy_version",
         "policy_verdict",
     }
@@ -86,6 +87,7 @@ def test_event_columns_and_indexes():
 def test_event_parent_span_id_is_nullable():
     assert EventRow.__table__.columns["parent_span_id"].nullable is True
     assert EventRow.__table__.columns["reasoning"].nullable is True
+    assert EventRow.__table__.columns["output"].nullable is True  # CP9.9
     assert EventRow.__table__.columns["policy_version"].nullable is True
     assert EventRow.__table__.columns["policy_verdict"].nullable is True
 

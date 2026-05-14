@@ -131,7 +131,13 @@ def normalise_otel_span(
         raise NormaliserError("span missing start_time_unix_nano or start_time")
 
     payload = dict(attributes)
-    reasoning = payload.pop("forensa.reasoning", None) or payload.pop("gen_ai.response.text", None)
+    # CP9.9 / NEW-P9.8.21: ``reasoning`` is the agent's rationale and is
+    # populated ONLY from the explicit ``forensa.reasoning`` attribute. The
+    # previous fallback to ``gen_ai.response.text`` was wrong: response.text
+    # is the model's *output*, not its *reasoning*. They are different things
+    # and conflating them would mislead investigators.
+    reasoning = payload.pop("forensa.reasoning", None)
+    output = payload.pop("gen_ai.response.text", None)
     policy_version = payload.pop("forensa.policy.version", None)
     policy_verdict = payload.pop("forensa.policy.verdict", None)
 
@@ -145,6 +151,7 @@ def normalise_otel_span(
         occurred_at=occ,
         payload=payload,
         reasoning=reasoning,
+        output=output,
         policy_version=policy_version,
         policy_verdict=policy_verdict,
     )

@@ -147,6 +147,7 @@ def test_receipt_columns_and_constraints():
         "payload_hash",
         "receipt_hash",
         "signature",
+        "agent_signature",  # CP9.18 - BR-02 dual signature
         "signed_at",
     }
     constraint_names = {c.name for c in ReceiptRow.__table__.constraints if c.name}
@@ -157,6 +158,9 @@ def test_receipt_columns_and_constraints():
     assert "ix_receipts_tenant_signed" in idx_names
     assert ReceiptRow.__table__.columns["receipt_hash"].unique is True
     assert ReceiptRow.__table__.columns["prev_receipt_hash"].nullable is True
+    # CP9.18: agent_signature is nullable for backwards compat with
+    # pre-migration-0006 receipts.
+    assert ReceiptRow.__table__.columns["agent_signature"].nullable is True
 
 
 def test_receipt_fks_to_events_and_policy_bundles():

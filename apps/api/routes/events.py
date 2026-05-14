@@ -58,8 +58,10 @@ from apps.api.idempotency_store import (
     is_valid_idempotency_key,
 )
 from apps.api.ingest_service import (
+    AgentSigningKeyProvider,
     DefaultBundleProvider,
     IngestServiceError,
+    InMemoryAgentSigningKeyProvider,
     InMemorySigningKeyProvider,
     PolicyBundleProvider,
     TenantSigningKeyProvider,
@@ -80,6 +82,7 @@ router = APIRouter(prefix="/v1", tags=["events"])
 
 _DEFAULT_BUNDLE_PROVIDER = DefaultBundleProvider()
 _DEFAULT_SIGNING_KEY_PROVIDER = InMemorySigningKeyProvider()
+_DEFAULT_AGENT_SIGNING_KEY_PROVIDER = InMemoryAgentSigningKeyProvider()
 _DEFAULT_IDEMPOTENCY_STORE: IdempotencyStore = InMemoryIdempotencyStore()
 
 
@@ -91,6 +94,15 @@ async def get_bundle_provider() -> PolicyBundleProvider:
 async def get_signing_key_provider() -> TenantSigningKeyProvider:
     """Default tenant signing key provider. Override in tests."""
     return _DEFAULT_SIGNING_KEY_PROVIDER
+
+
+async def get_agent_signing_key_provider() -> AgentSigningKeyProvider:
+    """Default agent signing key provider (CP9.18 / BR-02). Override in tests.
+
+    Today this is the process-local in-memory impl. Production wiring uses
+    the KMS adapter (CP11.1).
+    """
+    return _DEFAULT_AGENT_SIGNING_KEY_PROVIDER
 
 
 async def get_idempotency_store() -> IdempotencyStore:
@@ -217,6 +229,9 @@ async def submit_event(
     signing_key_provider: TenantSigningKeyProvider = Depends(  # noqa: B008
         get_signing_key_provider
     ),
+    agent_signing_key_provider: AgentSigningKeyProvider = Depends(  # noqa: B008
+        get_agent_signing_key_provider
+    ),
     idempotency_store: IdempotencyStore = Depends(get_idempotency_store),  # noqa: B008
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> EventCreatedResponse:
@@ -288,6 +303,7 @@ async def submit_event(
             enforcement_client=enforcement_client,
             bundle_provider=bundle_provider,
             signing_key_provider=signing_key_provider,
+            agent_signing_key_provider=agent_signing_key_provider,
         )
     except IngestServiceError as exc:
         raise HTTPException(

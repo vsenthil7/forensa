@@ -41,7 +41,17 @@ class Receipt(BaseModel):
     )
     signature: bytes = Field(
         ...,
-        description="Ed25519 signature over receipt_hash, raw 64 bytes",
+        description="Ed25519 signature over receipt_hash by TENANT key, raw 64 bytes",
+    )
+    agent_signature: bytes | None = Field(
+        default=None,
+        description=(
+            "Ed25519 signature over receipt_hash by AGENT key, raw 64 bytes."
+            " CP9.18 / BR-02: closes the Enterprise-Grade Review 3.10 finding"
+            " 'No agent signature path. BR-02 (dual signature) is unmet'."
+            " NULL is permitted for receipts persisted before alembic 0006"
+            " (backwards compatibility). All new Receipts MUST have one."
+        ),
     )
     signed_at: datetime
 
@@ -66,6 +76,17 @@ class Receipt(BaseModel):
     def _validate_sig_length(cls, v: bytes) -> bytes:
         if len(v) != _ED25519_SIG_LEN:
             raise ValueError(f"signature must be {_ED25519_SIG_LEN} bytes (Ed25519), got {len(v)}")
+        return v
+
+    @field_validator("agent_signature")
+    @classmethod
+    def _validate_agent_sig_length(cls, v: bytes | None) -> bytes | None:
+        if v is None:
+            return None
+        if len(v) != _ED25519_SIG_LEN:
+            raise ValueError(
+                f"agent_signature must be {_ED25519_SIG_LEN} bytes (Ed25519), got {len(v)}"
+            )
         return v
 
     @field_validator("signed_at")

@@ -292,6 +292,7 @@ async def test_second_event_links_to_previous_receipt(app, client):
     fake_prev.payload_hash = "1" * 64
     fake_prev.receipt_hash = "deadbeef" * 8  # 64 chars
     fake_prev.signature = b"\x00" * 64
+    fake_prev.agent_signature = None  # CP9.18: pre-migration-0006 chain head
     fake_prev.signed_at = datetime(2026, 5, 13, tzinfo=UTC)
 
     payload = _valid_event_payload(tenant_id=str(fake_prev.tenant_id))

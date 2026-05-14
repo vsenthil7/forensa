@@ -409,3 +409,151 @@ async def test_postgres_bundle_provider_auto_activates_on_cache_miss():
     assert None not in actor_ids  # synthetic system actors are real UUIDs not None
     # Final bundle row status must be 'active'
     assert bundle_rows[0].status == "active"
+
+
+# ---------------------------------------------------------------------------
+# CP9.18 / BR-02: InMemoryAgentSigningKeyProvider + agent_signing_key_provider
+# = None backwards-compat path through ingest_event.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_in_memory_agent_signing_key_provider_returns_32_byte_key():
+    """CP9.18: parallel to the tenant signing key provider, keyed by agent_id."""
+    from apps.api.ingest_service import InMemoryAgentSigningKeyProvider
+
+    p = InMemoryAgentSigningKeyProvider()
+    aid = uuid4()
+    key = await p.get_signing_key(aid)
+    assert isinstance(key, bytes)
+    assert len(key) == 32
+
+
+@pytest.mark.asyncio
+async def test_in_memory_agent_signing_key_provider_caches_per_agent():
+    """Same agent_id -> same key bytes (cache hit branch)."""
+    from apps.api.ingest_service import InMemoryAgentSigningKeyProvider
+
+    p = InMemoryAgentSigningKeyProvider()
+    aid = uuid4()
+    k1 = await p.get_signing_key(aid)
+    k2 = await p.get_signing_key(aid)
+    assert k1 == k2
+
+
+@pytest.mark.asyncio
+async def test_in_memory_agent_signing_key_provider_distinct_per_agent():
+    """Different agent_ids -> different keys (no cross-agent collision)."""
+    from apps.api.ingest_service import InMemoryAgentSigningKeyProvider
+
+    p = InMemoryAgentSigningKeyProvider()
+    a1 = uuid4()
+    a2 = uuid4()
+    k1 = await p.get_signing_key(a1)
+    k2 = await p.get_signing_key(a2)
+    assert k1 != k2
+
+
+@pytest.mark.asyncio
+async def test_ingest_event_with_no_agent_signing_key_provider_produces_single_sig_receipt():
+    """CP9.18 backwards-compat: ingest_event with agent_signing_key_provider=None
+    (the default, the legacy behaviour) calls build_receipt with
+    agent_signing_key=None and produces a receipt where agent_signature is None.
+
+    This is the path the route uses today when the auth layer hasn't yet
+    resolved an agent's identity (eg. anonymous / system-actor flows). Until
+    CP9.18c wires the agent_signing_key_provider through every route, this
+    branch is the production fallback.
+    """
+    bp = DefaultBundleProvider()
+    kp = InMemorySigningKeyProvider()
+    # Build an enforcement client bound to the same bundle bp returns.
+    tid = uuid4()
+    bundle = await bp.get_active_bundle(tid)
+    ec_client = MockLobsterTrapClient(
+        policy_bundle_id=bundle.id,
+        policy_bundle_version=bundle.version,
+        content=bundle.content,
+    )
+
+    class _BoundEnforcement(PolicyEnforcementClient):
+        async def evaluate(self, tenant_id: UUID, action: dict):  # type: ignore[override]
+            return await ec_client.evaluate(tenant_id, action)
+
+    event = _event(tenant_id=tid)
+    session = _mock_session()
+
+    result = await ingest_event(
+        session=session,
+        event=event,
+        enforcement_client=_BoundEnforcement(),
+        bundle_provider=bp,
+        signing_key_provider=kp,
+        # agent_signing_key_provider deliberately omitted - default None.
+    )
+
+    # Pull the ReceiptRow that was added to the session and confirm it has
+    # NO agent signature (backwards-compat fallback path).
+    from packages.ledger.models import ReceiptRow
+
+    receipt_rows = [
+        c.args[0] for c in session.add.call_args_list if isinstance(c.args[0], ReceiptRow)
+    ]
+    assert len(receipt_rows) == 1
+    assert receipt_rows[0].agent_signature is None
+    # Tenant signature must still be present and 64 bytes.
+    assert len(receipt_rows[0].signature) == 64
+    # Sanity: the integrity check still passed (chain bind is signature-independent).
+    assert result.integrity_ok is True
+
+
+@pytest.mark.asyncio
+async def test_ingest_event_with_agent_signing_key_provider_produces_dual_sig_receipt():
+    """CP9.18 happy path: ingest_event with agent_signing_key_provider produces
+    a receipt where BOTH signature and agent_signature are populated, signing
+    the same receipt_hash."""
+    from apps.api.ingest_service import InMemoryAgentSigningKeyProvider
+
+    bp = DefaultBundleProvider()
+    kp = InMemorySigningKeyProvider()
+    akp = InMemoryAgentSigningKeyProvider()
+    tid = uuid4()
+    bundle = await bp.get_active_bundle(tid)
+    ec_client = MockLobsterTrapClient(
+        policy_bundle_id=bundle.id,
+        policy_bundle_version=bundle.version,
+        content=bundle.content,
+    )
+
+    class _BoundEnforcement(PolicyEnforcementClient):
+        async def evaluate(self, tenant_id: UUID, action: dict):  # type: ignore[override]
+            return await ec_client.evaluate(tenant_id, action)
+
+    event = _event(tenant_id=tid)
+    session = _mock_session()
+
+    result = await ingest_event(
+        session=session,
+        event=event,
+        enforcement_client=_BoundEnforcement(),
+        bundle_provider=bp,
+        signing_key_provider=kp,
+        agent_signing_key_provider=akp,
+    )
+
+    from packages.ledger.models import ReceiptRow
+
+    receipt_rows = [
+        c.args[0] for c in session.add.call_args_list if isinstance(c.args[0], ReceiptRow)
+    ]
+    assert len(receipt_rows) == 1
+    row = receipt_rows[0]
+    # Both signatures populated.
+    assert row.signature is not None
+    assert len(row.signature) == 64
+    assert row.agent_signature is not None
+    assert len(row.agent_signature) == 64
+    # The two signatures are different bytes (different keys, same hash).
+    assert row.signature != row.agent_signature
+    # Live integrity check still passes - signatures are NOT part of the bind.
+    assert result.integrity_ok is True

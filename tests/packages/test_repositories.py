@@ -286,6 +286,7 @@ def test_get_latest_receipt_reconstructs_receipt_from_row():
     row.payload_hash = receipt.payload_hash
     row.receipt_hash = receipt.receipt_hash
     row.signature = receipt.signature
+    row.agent_signature = None  # CP9.18: backwards-compat receipt has no agent sig
     row.signed_at = receipt.signed_at
 
     session = MagicMock(spec=AsyncSession)

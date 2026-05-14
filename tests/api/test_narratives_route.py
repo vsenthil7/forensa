@@ -69,6 +69,7 @@ def _override_session_with_pairs(pairs: list[tuple[Receipt, UUID]]):
         row.payload_hash = r.payload_hash
         row.receipt_hash = r.receipt_hash
         row.signature = r.signature
+        row.agent_signature = None  # CP9.18: backwards-compat (pre-migration-0006)
         row.signed_at = r.signed_at
         return row
 
@@ -212,6 +213,7 @@ async def test_generate_narrative_rejects_too_many_receipts(app, client):
         row.payload_hash = "b" * 64
         row.receipt_hash = "c" * 64
         row.signature = b"\x00" * 64
+        row.agent_signature = None  # CP9.18: backwards-compat
         row.signed_at = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
         rows.append(row)
 

@@ -87,6 +87,7 @@ def _row_for(r: Receipt, snap_id: UUID) -> object:
     row.payload_hash = r.payload_hash
     row.receipt_hash = r.receipt_hash
     row.signature = r.signature
+    row.agent_signature = None  # CP9.18: backwards-compat (pre-migration-0006 receipt)
     row.signed_at = r.signed_at
     return row
 

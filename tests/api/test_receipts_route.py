@@ -72,6 +72,7 @@ def _override_session_with(returned_receipts: list[Receipt]):
         row.payload_hash = r.payload_hash
         row.receipt_hash = r.receipt_hash
         row.signature = r.signature
+        row.agent_signature = None  # CP9.18: backwards-compat (pre-migration-0006)
         row.signed_at = r.signed_at
         rows.append(row)
 
@@ -208,6 +209,7 @@ def _override_session_with_single(receipt: Receipt | None, snapshot_id: UUID | N
         row.payload_hash = receipt.payload_hash
         row.receipt_hash = receipt.receipt_hash
         row.signature = receipt.signature
+        row.agent_signature = None  # CP9.18: backwards-compat (pre-migration-0006)
         row.signed_at = receipt.signed_at
 
     result_mock = MagicMock()
@@ -374,6 +376,7 @@ def _override_session_honouring_signed_at(returned_receipts: list[Receipt]):
         row.payload_hash = r.payload_hash
         row.receipt_hash = r.receipt_hash
         row.signature = r.signature
+        row.agent_signature = None  # CP9.18: backwards-compat (pre-migration-0006)
         row.signed_at = r.signed_at
         return row
 

@@ -100,6 +100,26 @@ class TenantSigningKeyProvider(ABC):
         """Return the 32-byte Ed25519 private key for ``tenant_id``."""
 
 
+class AgentSigningKeyProvider(ABC):
+    """Resolves the Ed25519 signing key bytes for an agent (CP9.18 / BR-02).
+
+    Parallel to ``TenantSigningKeyProvider`` but per-agent. The agent's
+    signature is an independent witness over the same receipt_hash; see
+    ``packages.ledger.receipt_builder.build_receipt`` for the dual-signature
+    contract.
+
+    Production impl lands in ``CP11.1 HSM-backed signing keys``. Today's
+    fallback is a per-agent in-memory cache for tests / demo. The on-the-wire
+    key resolution (which agent's key to use for an incoming request) lives
+    in the auth layer (``apps.api.auth``); this provider just maps a
+    resolved agent_id to its private key bytes.
+    """
+
+    @abstractmethod
+    async def get_signing_key(self, agent_id: UUID) -> bytes:
+        """Return the 32-byte Ed25519 private key for ``agent_id``."""
+
+
 # ---------------------------------------------------------------------------
 # Default in-memory providers (for tests / hackathon demo)
 # ---------------------------------------------------------------------------
@@ -157,6 +177,26 @@ class InMemorySigningKeyProvider(TenantSigningKeyProvider):
             return cached
         priv, _ = generate_keypair()
         self._cache[tenant_id] = priv
+        return priv
+
+
+class InMemoryAgentSigningKeyProvider(AgentSigningKeyProvider):
+    """In-memory agent -> signing-key map for tests and demo (CP9.18 / BR-02).
+
+    Same shape as ``InMemorySigningKeyProvider`` but keyed by agent_id. A
+    fresh Ed25519 keypair is generated the first time each agent_id is
+    requested and cached for the process lifetime.
+    """
+
+    def __init__(self) -> None:
+        self._cache: dict[UUID, bytes] = {}
+
+    async def get_signing_key(self, agent_id: UUID) -> bytes:
+        cached = self._cache.get(agent_id)
+        if cached is not None:
+            return cached
+        priv, _ = generate_keypair()
+        self._cache[agent_id] = priv
         return priv
 
 
@@ -290,6 +330,7 @@ async def ingest_event(
     enforcement_client: PolicyEnforcementClient,
     bundle_provider: PolicyBundleProvider,
     signing_key_provider: TenantSigningKeyProvider,
+    agent_signing_key_provider: AgentSigningKeyProvider | None = None,
 ) -> IngestResult:
     """Persist an event end-to-end and return the ``IngestResult``.
 
@@ -305,7 +346,9 @@ async def ingest_event(
        genesis.
     5. Build the new Receipt: sequence = prev + 1, prev_hash linked,
        receipt_hash computed over the canonical bind including the
-       pre-allocated snapshot_id, Ed25519-signed by the tenant's signing key.
+       pre-allocated snapshot_id, Ed25519-signed by the tenant's signing key
+       AND (CP9.18) by the agent's signing key when ``agent_signing_key_provider``
+       is supplied. Both signatures are over the same receipt_hash bytes.
     6. Atomically persist (snapshot, event, receipt) via
        ``write_event_with_receipt`` with the pre-allocated snapshot_id.
     7. Live-verify integrity via ``recompute_receipt_hash`` so the caller
@@ -336,6 +379,9 @@ async def ingest_event(
 
     # 5 - build + sign with the pre-allocated snapshot_id
     signing_key = await signing_key_provider.get_signing_key(event.tenant_id)
+    agent_signing_key: bytes | None = None
+    if agent_signing_key_provider is not None:
+        agent_signing_key = await agent_signing_key_provider.get_signing_key(event.agent_id)
     receipt = build_receipt(
         tenant_id=event.tenant_id,
         event_id=event.id,
@@ -344,6 +390,7 @@ async def ingest_event(
         policy_snapshot_id=snapshot_id,
         prev_receipt=prev_receipt,
         tenant_signing_key=signing_key,
+        agent_signing_key=agent_signing_key,
     )
 
     # 6 - persist (snapshot, event, receipt) atomically with the same id

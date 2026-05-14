@@ -113,6 +113,7 @@ async def write_event_with_receipt(
         payload_hash=receipt.payload_hash,
         receipt_hash=receipt.receipt_hash,
         signature=receipt.signature,
+        agent_signature=receipt.agent_signature,
         signed_at=receipt.signed_at,
     )
 
@@ -149,6 +150,7 @@ async def get_receipt_by_id(
         payload_hash=row.payload_hash,
         receipt_hash=row.receipt_hash,
         signature=row.signature,
+        agent_signature=row.agent_signature,
         signed_at=row.signed_at,
     )
     return receipt, row.policy_snapshot_id
@@ -196,6 +198,7 @@ async def list_receipts_for_tenant(
             payload_hash=row.payload_hash,
             receipt_hash=row.receipt_hash,
             signature=row.signature,
+            agent_signature=row.agent_signature,
             signed_at=row.signed_at,
         )
         for row in rows
@@ -257,6 +260,7 @@ async def list_receipts_for_tenant_cursor(
             payload_hash=row.payload_hash,
             receipt_hash=row.receipt_hash,
             signature=row.signature,
+            agent_signature=row.agent_signature,
             signed_at=row.signed_at,
         )
         for row in rows
@@ -312,6 +316,7 @@ async def list_receipts_with_snapshot_for_tenant(
                 payload_hash=row.payload_hash,
                 receipt_hash=row.receipt_hash,
                 signature=row.signature,
+                agent_signature=row.agent_signature,
                 signed_at=row.signed_at,
             ),
             row.policy_snapshot_id,
@@ -349,6 +354,7 @@ async def get_latest_receipt_for_tenant(
         payload_hash=row.payload_hash,
         receipt_hash=row.receipt_hash,
         signature=row.signature,
+        agent_signature=row.agent_signature,
         signed_at=row.signed_at,
     )
 

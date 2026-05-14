@@ -65,12 +65,28 @@ def build_receipt(
     policy_snapshot_id: UUID,
     prev_receipt: Receipt | None,
     tenant_signing_key: bytes,
+    agent_signing_key: bytes | None = None,
 ) -> Receipt:
     """Build a signed Receipt for one event.
 
     prev_receipt is the most recently issued Receipt for this tenant, or
     None to start the chain. The returned Receipt is unwritten (the caller
     must persist it transactionally with the Event).
+
+    Dual-signature contract (CP9.18 / BR-02):
+
+    - ``signature`` is always the tenant signature over ``receipt_hash``.
+    - ``agent_signature`` is the agent signature over the SAME
+      ``receipt_hash``. Two independent witnesses to the same bound state.
+    - When ``agent_signing_key`` is None, ``agent_signature`` is None on the
+      returned Receipt. This is a transitional shape for backwards
+      compatibility with receipts created before CP9.18; new ingest paths
+      MUST supply an agent signing key.
+
+    The two signatures sign the SAME 64 bytes of ``receipt_hash`` so each
+    can be verified independently with its respective public key. Neither
+    signature is part of the binding hash itself (that would be circular).
+    The hash binds the content; the signatures are witnesses to the hash.
     """
     inputs = _validate_inputs(
         tenant_id=tenant_id,
@@ -83,6 +99,9 @@ def build_receipt(
 
     receipt_hash = _compute_receipt_hash(inputs)
     signature = ed25519_sign(tenant_signing_key, receipt_hash)
+    agent_signature: bytes | None = (
+        ed25519_sign(agent_signing_key, receipt_hash) if agent_signing_key is not None else None
+    )
 
     return Receipt(
         id=uuid4(),
@@ -94,6 +113,7 @@ def build_receipt(
         payload_hash=inputs.payload_hash,
         receipt_hash=receipt_hash,
         signature=signature,
+        agent_signature=agent_signature,
         signed_at=datetime.now(UTC),
     )
 
@@ -102,8 +122,25 @@ def verify_receipt_signature(
     receipt: Receipt,
     tenant_public_key: bytes,
 ) -> bool:
-    """Return True iff the receipt's signature verifies under the public key."""
+    """Return True iff the receipt's TENANT signature verifies under the public key."""
     return ed25519_verify(tenant_public_key, receipt.receipt_hash, receipt.signature)
+
+
+def verify_receipt_agent_signature(
+    receipt: Receipt,
+    agent_public_key: bytes,
+) -> bool:
+    """Return True iff the receipt's AGENT signature verifies under the public key.
+
+    Returns False (NOT True) when ``receipt.agent_signature`` is None, even
+    though there is technically nothing to disprove: callers checking dual
+    signature coverage want a positive 'yes the agent signed this' answer.
+    A backwards-compat receipt with no agent_signature is correctly reported
+    as unverified at the agent layer.
+    """
+    if receipt.agent_signature is None:
+        return False
+    return ed25519_verify(agent_public_key, receipt.receipt_hash, receipt.agent_signature)
 
 
 def recompute_receipt_hash(receipt: Receipt, policy_snapshot_id: UUID) -> str:

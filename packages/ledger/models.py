@@ -278,4 +278,14 @@ class ReceiptRow(Base):
     payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     receipt_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     signature: Mapped[bytes] = mapped_column(LargeBinary(64), nullable=False)
+    agent_signature: Mapped[bytes | None] = mapped_column(
+        LargeBinary(64),
+        nullable=True,
+        comment=(
+            "CP9.18 / BR-02 dual signature. Ed25519 over receipt_hash by the"
+            " agent's key (independent witness from the tenant's signature)."
+            " NULLable for backwards compat with receipts persisted before"
+            " alembic 0006; new ingest paths MUST populate it."
+        ),
+    )
     signed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

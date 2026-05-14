@@ -111,6 +111,10 @@ def build_evidence_pack(
         "receipts": [_canonicalise_item(it) for it in items],
         "activities": [a.model_dump(mode="json") for a in activities],
     }
+    # NOTE (CP9.10, re review finding 3.17.5 RETRACTED): receipt_count IS
+    # bound into root_hash because header.model_dump() includes it. The
+    # reviewer flagged this as missing then retracted; this comment is here
+    # so a future reader doesn't re-flag the same false positive.
     root_hash = sha256_hex(bind)
 
     return EvidencePack(

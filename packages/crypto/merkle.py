@@ -1,5 +1,23 @@
 """Append-only Merkle-style hash chain for Receipt linkage.
 
+.. note:: **This module implements a Merkle hash _chain_, not a Merkle _tree_.**
+
+   A chain gives O(N) inclusion proofs (prove receipt #N is in the chain by
+   presenting all N entries). A true Merkle tree gives O(log N) inclusion
+   proofs via sibling-hash paths to a tree root (RFC 6962-style certificate
+   transparency is the canonical example).
+
+   At hackathon-week scale (thousands of receipts per tenant) the chain is
+   sufficient and correct. The tree upgrade is tracked as backlog item
+   `NEW-P11.X.merkle-tree` in
+   `docs/reviews/01_Rev_Claude_20260514_0919/REVIEW_RESPONSE_AND_BACKLOG_20260514_0955.md`
+   and is required at 10M+ receipt scale for sub-linear inclusion proofs.
+
+   The module name is left as ``merkle`` rather than renamed because (a)
+   "Merkle-style hash chain" is established industry terminology (Sigstore,
+   in-toto, AWS QLDB all use "Merkle" loosely) and (b) renaming would touch
+   every import. This docstring is the honesty-fix per CP9.8 / NEW-P9.8.8.
+
 The Forensa Receipt ledger is a per-tenant append-only sequence. Each Receipt
 records prev_hash = receipt_hash of the previous entry, sequence = monotonic
 counter starting at 0. Tampering with any entry invalidates the chain from

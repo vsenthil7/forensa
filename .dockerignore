@@ -1,0 +1,65 @@
+# CP9.10 / NEW-P9.8.30 - Forensa Docker build-context exclusions.
+#
+# Keeps the build context small (faster builds, smaller layer churn) and
+# prevents secrets / dev artefacts from being baked into images.
+
+# VCS
+.git
+.gitignore
+.gitattributes
+.github
+
+# Python build artefacts
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+.coverage.*
+htmlcov
+.tox
+.venv
+venv
+env
+*.egg-info
+.eggs
+dist
+build
+
+# Node / frontend
+node_modules
+.next
+.turbo
+
+# Local backups, transcripts, context logs
+_backup
+**/_backup
+context_log
+
+# Local config + secrets - NEVER copy into images
+.env
+.env.*
+!.env.example
+
+# IDE / editor noise
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Test outputs
+test-results
+playwright-report
+junit.xml
+
+# Documentation (not needed at runtime; rebuild from source on the docs host)
+docs
+
+# Review artefacts and scripts that are not part of the runtime image
+scripts/test_api_keys.py

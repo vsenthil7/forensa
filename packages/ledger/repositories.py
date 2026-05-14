@@ -21,6 +21,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.ledger.models import EventRow, PolicySnapshotRow, ReceiptRow
@@ -124,8 +125,6 @@ async def get_receipt_by_id(
     recompute_receipt_hash needs it to verify integrity, and Receipt itself
     does not carry that field (only policy_bundle_id).
     """
-    from sqlalchemy import select
-
     stmt = select(ReceiptRow).where(ReceiptRow.id == receipt_id).limit(1)
     result = await session.execute(stmt)
     row = result.scalar_one_or_none()
@@ -163,8 +162,6 @@ async def list_receipts_for_tenant(
     should prefer ``list_receipts_for_tenant_cursor`` which seeks on the
     indexed sequence column instead.
     """
-    from sqlalchemy import select
-
     stmt = (
         select(ReceiptRow)
         .where(ReceiptRow.tenant_id == tenant_id)
@@ -217,8 +214,6 @@ async def list_receipts_for_tenant_cursor(
     The ``(tenant_id, sequence)`` UNIQUE index makes the seek a single
     index lookup; the row read is then bounded by ``limit``.
     """
-    from sqlalchemy import select
-
     stmt = select(ReceiptRow).where(ReceiptRow.tenant_id == tenant_id)
     if before_sequence is not None:
         stmt = stmt.where(ReceiptRow.sequence < before_sequence)
@@ -268,8 +263,6 @@ async def list_receipts_with_snapshot_for_tenant(
     Both scope endpoints are inclusive. signed_at is indexed by
     ``(tenant_id, signed_at)`` via the alembic migration.
     """
-    from sqlalchemy import select
-
     stmt = (
         select(ReceiptRow)
         .where(
@@ -311,8 +304,6 @@ async def get_latest_receipt_for_tenant(
     Used by the ingest pipeline to fetch prev_receipt before building the
     next one. Single-query path with the (tenant_id, sequence) unique index.
     """
-    from sqlalchemy import select
-
     stmt = (
         select(ReceiptRow)
         .where(ReceiptRow.tenant_id == tenant_id)

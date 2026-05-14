@@ -51,7 +51,7 @@ minversion = "8.0"
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-addopts = ["-ra", "--strict-markers", "--strict-config", "--cov=apps", "--cov=packages", "--cov-branch", "--cov-report=term-missing", "--cov-fail-under=100"]
+addopts = ["-ra", "--strict-markers", "--strict-config", "--cov=apps", "--cov=packages", "--cov=scripts", "--cov-branch", "--cov-report=term-missing", "--cov-fail-under=100"]
 norecursedirs = ["_backup", ".git", ".venv", "__pycache__", "node_modules", "alembic"]
 python_files = ["test_*.py"]
 filterwarnings = ["error", "ignore::DeprecationWarning:pytest_asyncio"]

@@ -36,14 +36,19 @@ are append-only; ``PolicyBundleRow.status`` is mutated to reflect the new
 state but the approval rows themselves preserve the full chronological
 history.
 
+CP9.15.1: segregation-of-duties is now enforced at the row level.
+Reviewer must differ from author; approver must differ from author and
+reviewer; activator may be any actor (operational role, not a judgment
+role). Violations raise ``BundleSegregationError``. Activation also wraps
+the supersede-then-activate sequence in a SAVEPOINT so partial failure
+rolls back atomically.
+
 Out of scope for this CP (tracked as later items):
 
 - Per-step actor authentication (``actor_id`` is opaque today). CP10.x.
 - Bundle-approval rows emitting their own Forensa Receipts (eat your own
   dogfood). ``NEW-P9.15.bundle-approval-receipts``.
 - REST surface (``POST /v1/policy-bundles/{id}/approve`` etc.). CP9.16.
-- Author <-> reviewer <-> approver segregation enforced at the row level
-  (today it's the caller's responsibility). ``NEW-P9.15.segregation-of-duties``.
 """
 
 from __future__ import annotations
@@ -83,6 +88,14 @@ class BundleWorkflowError(ValueError):
 
 class BundleNotFoundError(BundleWorkflowError):
     """Raised when the bundle id passed to a transition does not exist."""
+
+
+class BundleSegregationError(BundleWorkflowError):
+    """CP9.15.1: raised when an actor attempts a role they're already filling
+    for the same bundle (e.g. author trying to also review). Segregation of
+    duties is enforced because the whole point of the workflow is that
+    multiple humans look at the bundle - one human doing every step defeats
+    the audit."""
 
 
 async def propose(
@@ -125,7 +138,20 @@ async def review(
     reviewer_actor_id: UUID,
     reason: str,
 ) -> UUID:
-    """Transition a ``proposed`` bundle to ``reviewed``."""
+    """Transition a ``proposed`` bundle to ``reviewed``.
+
+    Segregation: reviewer MUST NOT equal the author (the actor_id on the
+    ``proposed -> proposed`` row written by ``propose``). If the bundle has
+    never been ``propose``-d (no author row), the segregation check is
+    skipped - the workflow does not REQUIRE a propose() call, only that if
+    one exists its actor is honoured.
+    """
+    await _enforce_segregation(
+        session,
+        bundle_id=bundle_id,
+        new_actor_id=reviewer_actor_id,
+        forbidden_roles=("author",),
+    )
     return await _transition(
         session,
         bundle_id=bundle_id,
@@ -142,7 +168,16 @@ async def approve(
     approver_actor_id: UUID,
     reason: str,
 ) -> UUID:
-    """Transition a ``reviewed`` bundle to ``approved``."""
+    """Transition a ``reviewed`` bundle to ``approved``.
+
+    Segregation: approver MUST NOT equal the author OR the reviewer.
+    """
+    await _enforce_segregation(
+        session,
+        bundle_id=bundle_id,
+        new_actor_id=approver_actor_id,
+        forbidden_roles=("author", "reviewer"),
+    )
     return await _transition(
         session,
         bundle_id=bundle_id,
@@ -161,12 +196,21 @@ async def activate(
 ) -> UUID:
     """Transition an ``approved`` bundle to ``active``.
 
-    If the tenant already has an active bundle, automatically supersede it
-    in the same transaction (FK-respecting order: supersede first, then
-    activate). The DB ``uq_policy_bundles_one_active_per_tenant`` partial
-    UNIQUE index will reject concurrent activations of two bundles to the
-    same tenant - one wins, the other gets ``IntegrityError`` which the
-    caller should retry or surface as ``BundleWorkflowError``.
+    Activator role is operational (deployment-time signal), not a judgment
+    role, so segregation is NOT enforced against author/reviewer/approver
+    here. A bundle can be activated by anyone authorised (CP10.x) to deploy.
+
+    If the tenant already has an active bundle, automatically supersede it.
+    CP9.15.1: the supersede + activate are wrapped in a SAVEPOINT so if the
+    activation fails mid-flow, the supersede is rolled back and the prior
+    active bundle keeps its active status. Without the savepoint a partial
+    failure leaves the tenant with zero active bundles AND a superseded
+    audit row claiming activation that didn't happen.
+
+    The DB ``uq_policy_bundles_one_active_per_tenant`` partial UNIQUE index
+    rejects concurrent activations of two bundles to the same tenant - one
+    wins, the other gets ``IntegrityError`` which surfaces as
+    ``BundleWorkflowError``.
     """
     bundle = await _load_bundle(session, bundle_id)
     if bundle.status != "approved":
@@ -174,34 +218,40 @@ async def activate(
             f"activate() requires bundle.status == 'approved', got {bundle.status!r}"
         )
 
-    # Supersede any currently-active bundle for this tenant FIRST so the
-    # partial UNIQUE index does not see two actives at flush time.
-    stmt = select(PolicyBundleRow).where(
-        PolicyBundleRow.tenant_id == bundle.tenant_id,
-        PolicyBundleRow.status == "active",
-    )
-    result = await session.execute(stmt)
-    prior_active = result.scalar_one_or_none()
-    if prior_active is not None:
-        await _write_approval(
-            session,
-            bundle=prior_active,
-            from_status="active",
-            to_status="superseded",
-            actor_id=activator_actor_id,
-            actor_role="system",
-            reason=f"automatically superseded by activation of bundle {bundle_id}",
+    # Wrap supersede + activate in a SAVEPOINT (nested transaction). On any
+    # exception the savepoint rolls back, leaving the outer session_scope's
+    # transaction in its pre-activate state. If the outer session is not in
+    # a transaction yet, begin_nested still works (SQLAlchemy auto-begins).
+    async with session.begin_nested():
+        # Supersede any currently-active bundle for this tenant FIRST so the
+        # partial UNIQUE index does not see two actives at flush time.
+        stmt = select(PolicyBundleRow).where(
+            PolicyBundleRow.tenant_id == bundle.tenant_id,
+            PolicyBundleRow.status == "active",
         )
-        prior_active.status = "superseded"
-        await session.flush()
+        result = await session.execute(stmt)
+        prior_active = result.scalar_one_or_none()
+        if prior_active is not None:
+            await _write_approval(
+                session,
+                bundle=prior_active,
+                from_status="active",
+                to_status="superseded",
+                actor_id=activator_actor_id,
+                actor_role="system",
+                reason=f"automatically superseded by activation of bundle {bundle_id}",
+            )
+            prior_active.status = "superseded"
+            await session.flush()
 
-    return await _transition(
-        session,
-        bundle_id=bundle_id,
-        target_status="active",
-        actor_id=activator_actor_id,
-        reason=reason,
-    )
+        approval_id = await _transition(
+            session,
+            bundle_id=bundle_id,
+            target_status="active",
+            actor_id=activator_actor_id,
+            reason=reason,
+        )
+    return approval_id
 
 
 async def supersede(
@@ -257,6 +307,38 @@ async def _load_bundle(session: AsyncSession, bundle_id: UUID) -> PolicyBundleRo
     if row is None:
         raise BundleNotFoundError(f"bundle {bundle_id} not found")
     return row
+
+
+async def _enforce_segregation(
+    session: AsyncSession,
+    *,
+    bundle_id: UUID,
+    new_actor_id: UUID,
+    forbidden_roles: tuple[str, ...],
+) -> None:
+    """CP9.15.1: refuse if ``new_actor_id`` already filled any of
+    ``forbidden_roles`` for this bundle.
+
+    Queries the approval log for all rows for the bundle with
+    ``actor_role`` in ``forbidden_roles``. If any of those rows has
+    ``actor_id == new_actor_id``, raises ``BundleSegregationError``.
+
+    This is enforced at the application layer; a future DB-level enforcement
+    (e.g. a CHECK that examines the approvals table on insert) is tracked
+    as ``NEW-P9.15.segregation-db-trigger``.
+    """
+    stmt = select(PolicyBundleApprovalRow.actor_id, PolicyBundleApprovalRow.actor_role).where(
+        PolicyBundleApprovalRow.bundle_id == bundle_id,
+        PolicyBundleApprovalRow.actor_role.in_(forbidden_roles),
+    )
+    result = await session.execute(stmt)
+    for existing_actor_id, existing_role in result.all():
+        if existing_actor_id == new_actor_id:
+            raise BundleSegregationError(
+                f"actor {new_actor_id} already filled role {existing_role!r} for "
+                f"bundle {bundle_id}; cannot also act in role(s) requiring "
+                f"segregation from {forbidden_roles}"
+            )
 
 
 async def _transition(

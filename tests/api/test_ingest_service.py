@@ -402,9 +402,10 @@ async def test_postgres_bundle_provider_auto_activates_on_cache_miss():
         ("reviewed", "approved"),
         ("approved", "active"),
     ]
-    # All four approvals share one synthetic system actor
+    # CP9.15.1: each role has a distinct synthetic actor (segregation of
+    # duties), so we expect 4 distinct actor_ids across the 4 approval rows.
     actor_ids = {a.actor_id for a in approval_rows}
-    assert len(actor_ids) == 1
-    assert None not in actor_ids  # synthetic system actor is a real UUID not None
+    assert len(actor_ids) == 4
+    assert None not in actor_ids  # synthetic system actors are real UUIDs not None
     # Final bundle row status must be 'active'
     assert bundle_rows[0].status == "active"

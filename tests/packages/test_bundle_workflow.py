@@ -63,14 +63,25 @@ def _make_session(
     *,
     scalar_returns: list,
     captured_added: list | None = None,
+    segregation_returns: list | None = None,
 ) -> MagicMock:
     """Mock session whose ``scalar_one_or_none`` follows ``scalar_returns`` in order.
 
     ``captured_added`` accumulates rows passed to ``session.add`` so tests
     can inspect approval rows + bundle row mutations.
+
+    CP9.15.1: also handles:
+    - ``result.all()`` for the segregation-of-duties pre-check. By default
+      returns ``[]`` (no prior actor with the forbidden role for this
+      bundle). Tests that need to provoke a segregation violation pass
+      ``segregation_returns=[(actor_id, role), ...]``.
+    - ``session.begin_nested()`` as an async context manager (SAVEPOINT)
+      so the activate() flow's atomicity wrapper works against the mock.
     """
     if captured_added is None:
         captured_added = []
+    if segregation_returns is None:
+        segregation_returns = []
 
     iterator = iter(scalar_returns)
 
@@ -82,21 +93,31 @@ def _make_session(
 
     result_mock = MagicMock()
     result_mock.scalar_one_or_none = MagicMock(side_effect=_next_return)
+    # The same result_mock is returned from every session.execute(); both
+    # ``scalar_one_or_none`` and ``all`` are exposed on it. The segregation
+    # check uses ``result.all()`` directly so ``all`` returns the
+    # pre-canned list (default empty).
+    result_mock.all = MagicMock(return_value=segregation_returns)
     scalars_mock = MagicMock()
-
-    def _scalars_all_factory():
-        # Each call returns whatever was just set up via scalar_returns
-        # peek - but list_approvals_for_bundle uses result.scalars().all()
-        # not scalar_one_or_none, so this is set separately below per test.
-        return []
-
-    scalars_mock.all = MagicMock(side_effect=_scalars_all_factory)
+    scalars_mock.all = MagicMock(return_value=[])
     result_mock.scalars = MagicMock(return_value=scalars_mock)
 
     session = MagicMock()
     session.execute = AsyncMock(return_value=result_mock)
     session.add = MagicMock(side_effect=lambda row: captured_added.append(row))
     session.flush = AsyncMock(return_value=None)
+
+    # CP9.15.1: begin_nested() is used by activate() to wrap supersede+
+    # activate in a SAVEPOINT. Mock it as an async context manager that
+    # does nothing on enter/exit.
+    class _SavepointStub:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    session.begin_nested = MagicMock(return_value=_SavepointStub())
     return session
 
 
@@ -311,6 +332,170 @@ async def test_supersede_rejects_non_active_state():
     session = _make_session(scalar_returns=[bundle])
     with pytest.raises(BundleWorkflowError, match="invalid transition"):
         await supersede(session, bundle_id=bid, actor_id=uuid4(), reason="too early")
+
+
+# ---------------------------------------------------------------------------
+# CP9.15.1: segregation of duties
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_review_rejects_actor_who_was_author():
+    """CP9.15.1: reviewer must differ from author.
+
+    Segregation check queries the approval log for rows where actor_role
+    is in the forbidden set and refuses if any have the new actor's id.
+    """
+    from packages.ledger.bundle_workflow import BundleSegregationError
+
+    tid = uuid4()
+    bid = uuid4()
+    author = uuid4()
+    bundle = _make_bundle_mock(bundle_id=bid, tenant_id=tid, status="proposed")
+    # The segregation check sees one prior author row with actor_id=author
+    session = _make_session(
+        scalar_returns=[bundle],  # never reached - segregation fires first
+        segregation_returns=[(author, "author")],
+    )
+    with pytest.raises(BundleSegregationError, match="already filled role 'author'"):
+        await review(session, bundle_id=bid, reviewer_actor_id=author, reason="LGTM")
+
+
+@pytest.mark.asyncio
+async def test_approve_rejects_actor_who_was_author():
+    """CP9.15.1: approver must differ from author."""
+    from packages.ledger.bundle_workflow import BundleSegregationError
+
+    tid = uuid4()
+    bid = uuid4()
+    author = uuid4()
+    bundle = _make_bundle_mock(bundle_id=bid, tenant_id=tid, status="reviewed")
+    session = _make_session(
+        scalar_returns=[bundle],
+        segregation_returns=[(author, "author")],
+    )
+    with pytest.raises(BundleSegregationError, match="already filled role 'author'"):
+        await approve(session, bundle_id=bid, approver_actor_id=author, reason="sign off")
+
+
+@pytest.mark.asyncio
+async def test_approve_rejects_actor_who_was_reviewer():
+    """CP9.15.1: approver must differ from reviewer."""
+    from packages.ledger.bundle_workflow import BundleSegregationError
+
+    tid = uuid4()
+    bid = uuid4()
+    reviewer = uuid4()
+    bundle = _make_bundle_mock(bundle_id=bid, tenant_id=tid, status="reviewed")
+    session = _make_session(
+        scalar_returns=[bundle],
+        segregation_returns=[(uuid4(), "author"), (reviewer, "reviewer")],
+    )
+    with pytest.raises(BundleSegregationError, match="already filled role 'reviewer'"):
+        await approve(session, bundle_id=bid, approver_actor_id=reviewer, reason="sign off")
+
+
+@pytest.mark.asyncio
+async def test_activate_allows_actor_who_was_author_reviewer_or_approver():
+    """CP9.15.1: activator role is operational, NOT a judgment role, so
+    segregation is NOT enforced. A bundle can be activated by anyone
+    authorised to deploy - including someone who was the author.
+    """
+    tid = uuid4()
+    bid = uuid4()
+    actor = uuid4()  # same actor as everyone
+    bundle = _make_bundle_mock(bundle_id=bid, tenant_id=tid, status="approved")
+    # The segregation_returns list is set up to look like author+reviewer+
+    # approver were all this actor. If activate enforced segregation, it
+    # would raise. The test asserts it does NOT raise.
+    session = _make_session(
+        scalar_returns=[bundle, None, bundle],  # load, prior-active, _transition load
+        segregation_returns=[
+            (actor, "author"),
+            (actor, "reviewer"),
+            (actor, "approver"),
+        ],
+    )
+    await activate(session, bundle_id=bid, activator_actor_id=actor, reason="go live")
+    assert bundle.status == "active"
+
+
+# ---------------------------------------------------------------------------
+# CP9.15.1: activate() wraps supersede+activate in a SAVEPOINT
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_activate_opens_savepoint_for_atomicity():
+    """CP9.15.1: activate() must call ``session.begin_nested()`` so that
+    the supersede+activate sequence is wrapped in a SAVEPOINT. Without
+    this, a partial failure leaves the tenant with zero active bundles
+    AND a superseded audit row claiming activation that didn't happen.
+    """
+    tid = uuid4()
+    bid = uuid4()
+    bundle = _make_bundle_mock(bundle_id=bid, tenant_id=tid, status="approved")
+    session = _make_session(scalar_returns=[bundle, None, bundle])
+    await activate(session, bundle_id=bid, activator_actor_id=uuid4(), reason="go live")
+    # Verify begin_nested was called exactly once for this activate call
+    assert session.begin_nested.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_activate_savepoint_rolls_back_on_inner_failure():
+    """CP9.15.1: if the inner _transition raises, the SAVEPOINT must
+    abort. We simulate this by having scalar_one_or_none raise on the
+    third call (the _transition's _load_bundle).
+
+    The test verifies that the exception propagates out (the savepoint
+    re-raises) AND that begin_nested was entered. End-to-end rollback
+    verification against a real DB is tracked as
+    ``NEW-P9.15.1.savepoint-pg-integration``.
+    """
+    tid = uuid4()
+    bid = uuid4()
+    bundle = _make_bundle_mock(bundle_id=bid, tenant_id=tid, status="approved")
+
+    # Custom side_effect: first call returns bundle, second returns None
+    # (no prior active), third RAISES to simulate _transition failure.
+    call_count = {"n": 0}
+
+    def _scalar_side_effect():
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return bundle
+        if call_count["n"] == 2:
+            return None  # no prior active
+        # Third call: simulate DB error in the _transition's _load_bundle
+        raise RuntimeError("simulated DB failure in _transition")
+
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none = MagicMock(side_effect=_scalar_side_effect)
+    result_mock.all = MagicMock(return_value=[])
+    scalars_mock = MagicMock()
+    scalars_mock.all = MagicMock(return_value=[])
+    result_mock.scalars = MagicMock(return_value=scalars_mock)
+
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=result_mock)
+    session.add = MagicMock()
+    session.flush = AsyncMock(return_value=None)
+
+    class _SavepointStub:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            # The real SAVEPOINT auto-aborts on exception; the stub just
+            # re-raises by returning None / False.
+            return None
+
+    session.begin_nested = MagicMock(return_value=_SavepointStub())
+
+    with pytest.raises(RuntimeError, match="simulated DB failure"):
+        await activate(session, bundle_id=bid, activator_actor_id=uuid4(), reason="go live")
+    # The savepoint context manager MUST have been entered before failure
+    assert session.begin_nested.call_count == 1
 
 
 # ---------------------------------------------------------------------------

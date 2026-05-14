@@ -117,6 +117,40 @@ def upgrade() -> None:
         ["tenant_id", "decided_at"],
     )
 
+    # 3. CP9.15.1: append-only enforcement at the DB level. The application
+    # only ever INSERTs into policy_bundle_approvals, but defence-in-depth
+    # requires the DB itself to refuse UPDATE/DELETE so a compromised
+    # application connection cannot rewrite history. Implemented as a
+    # PL/pgSQL trigger that raises on any non-INSERT mutation. Same
+    # treatment applied to policy_bundles for the approval-bearing rows
+    # would require row-level discrimination (active rows must still be
+    # mutable to status='superseded'); for that table we rely on the
+    # CHECK + partial UNIQUE constraints instead.
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION forensa_block_approval_mutation()
+        RETURNS TRIGGER LANGUAGE plpgsql AS $func$
+        BEGIN
+            RAISE EXCEPTION 'policy_bundle_approvals is append-only; % is forbidden', TG_OP;
+        END;
+        $func$;
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER trg_policy_bundle_approvals_block_update
+        BEFORE UPDATE ON policy_bundle_approvals
+        FOR EACH ROW EXECUTE FUNCTION forensa_block_approval_mutation();
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER trg_policy_bundle_approvals_block_delete
+        BEFORE DELETE ON policy_bundle_approvals
+        FOR EACH ROW EXECUTE FUNCTION forensa_block_approval_mutation();
+        """
+    )
+
     # Drop the server_default after backfill so new INSERTs from Python
     # supply the value explicitly (matches the SQLAlchemy default on the
     # ORM column).
@@ -124,6 +158,13 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute(
+        "DROP TRIGGER IF EXISTS trg_policy_bundle_approvals_block_delete ON policy_bundle_approvals"
+    )
+    op.execute(
+        "DROP TRIGGER IF EXISTS trg_policy_bundle_approvals_block_update ON policy_bundle_approvals"
+    )
+    op.execute("DROP FUNCTION IF EXISTS forensa_block_approval_mutation()")
     op.drop_index(
         "ix_policy_bundle_approvals_tenant_decided",
         table_name="policy_bundle_approvals",

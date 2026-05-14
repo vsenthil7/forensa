@@ -230,34 +230,38 @@ class PostgresBundleProvider(PolicyBundleProvider):
             await write_bundle(session, bundle)
 
             if self._auto_activate:
-                # Walk the bundle through the approval workflow with a
-                # synthetic system actor so subsequent get_active_bundle
-                # calls find it via status='active'. Production callers who
-                # want real reviewer / approver identities should set
+                # Walk the bundle through the approval workflow with
+                # distinct synthetic system actors (CP9.15.1: segregation
+                # of duties is now enforced - one actor cannot fill two
+                # judgment roles). Production callers wanting real
+                # reviewer / approver identities should set
                 # auto_activate=False and drive the workflow themselves.
-                system_actor = uuid4()
+                author_actor = uuid4()
+                reviewer_actor = uuid4()
+                approver_actor = uuid4()
+                activator_actor = uuid4()
                 await workflow_propose(
                     session,
                     bundle_id=bundle.id,
-                    author_actor_id=system_actor,
+                    author_actor_id=author_actor,
                     reason="auto-bootstrap by PostgresBundleProvider",
                 )
                 await workflow_review(
                     session,
                     bundle_id=bundle.id,
-                    reviewer_actor_id=system_actor,
+                    reviewer_actor_id=reviewer_actor,
                     reason="auto-bootstrap by PostgresBundleProvider",
                 )
                 await workflow_approve(
                     session,
                     bundle_id=bundle.id,
-                    approver_actor_id=system_actor,
+                    approver_actor_id=approver_actor,
                     reason="auto-bootstrap by PostgresBundleProvider",
                 )
                 await workflow_activate(
                     session,
                     bundle_id=bundle.id,
-                    activator_actor_id=system_actor,
+                    activator_actor_id=activator_actor,
                     reason="auto-bootstrap by PostgresBundleProvider",
                 )
             return bundle

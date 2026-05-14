@@ -91,6 +91,43 @@ These are items the review identified that the existing enterprise roadmap (Phas
 | `NEW-P11.X.merkle-tree` | RFC 6962-style Merkle tree for sub-linear inclusion proofs | Review item #16 | 1 week | Phase 11 stretch | Required at 10M+ receipt scale. Current append-only chain works for v1. |
 | `NEW-P12.X.chain-head-concurrency` | `SELECT ... FOR UPDATE` or optimistic-concurrency retry loop on chain head | Review item #18 | 1 day | Phase 12 alongside CP12.4 | Today: concurrent ingest → 500 on UNIQUE violation. Fix: retry on integrity error; bounded 3 attempts. |
 | `NEW-P12.Y.hallucination-guard` | Structural consistency check between narrative output and pack contents | Review finding N.6 | 3 days | Phase 12 | Non-trivial; needs grammar over pack facts vs narrative claims. |
+| `NEW-P13.X.vertex-migration` | Migrate LiveNarrativeClient from `google-generativeai` (AI Studio + API key) to `google-cloud-aiplatform` (Vertex AI + GCP IAM) | User request 14 May 13:13 + general enterprise principle | 1 week | Phase 13 alongside CP13.1 (SOC 2) | See "Why Vertex over AI Studio" subsection below. |
+| `NEW-P13.X.multi-provider-narrative` | Add `OpenAINarrativeClient` + `ClaudeNarrativeClient` + `LlamaLocalNarrativeClient` subclasses of NarrativeClient ABC | User request 14 May 13:16 + customer-choice principle | 1 week | Phase 13 stretch | Each subclass is ~225 LOC + 90 LOC tests (same pattern as LiveNarrativeClient). All inherit the 4-layer prompt-injection defence. Customer selects provider per-tenant via config. |
+
+### Why Vertex over AI Studio (NEW-P13.X.vertex-migration rationale)
+
+| Aspect | AI Studio (today) | Vertex AI (enterprise target) |
+|---|---|---|
+| Auth | Plaintext API key string in env var | GCP service account + IAM roles; no key strings |
+| Network egress | Calls `generativelanguage.googleapis.com` (public internet) | Calls Vertex endpoint inside VPC Service Controls perimeter |
+| Data residency | US-only by default | Region-pinnable (EU, UK, US, asia-*); critical for GDPR + UK DPA |
+| Logging | Limited; key-based attribution | GCP Audit Logs (Data Access events) on every inference call |
+| Encryption at rest | Google-managed | Customer-Managed Encryption Keys (CMEK) supported |
+| Procurement | "Generic Google API key" - flagged by every enterprise procurement team | Standard GCP subprocessor; covered by existing GCP MSA |
+| Cost | Free tier + simple usage tier | Per-token billed; line-item visible per GCP project |
+| SLA | None on free tier; community on paid | 99.9% on Vertex AI Online Prediction |
+
+**Migration strategy when Phase 13 is scheduled:**
+
+1. The existing `NarrativeClient` ABC is provider-agnostic by design (per CP9.1). Adding `VertexNarrativeClient(NarrativeClient)` is the same pattern as adding `LiveNarrativeClient` was.
+2. Keep `LiveNarrativeClient` (AI Studio path) as a fallback for dev / small customers / hackathon contexts. Do NOT remove the code. The two clients live side-by-side.
+3. Env var resolution order in `apps/api/main.py`: if `FORENSA_VERTEX_PROJECT_ID` is set, wire `VertexNarrativeClient`; else if `FORENSA_GEMINI_API_KEY` is set, wire `LiveNarrativeClient`; else fall back to `MockNarrativeClient`.
+4. **Startup log line announces which client is wired** so the operator always knows which path is in use. (This is in CP9.4 scope; the same line just gains a third branch when Vertex lands.)
+5. The 4-layer prompt-injection defence is inherited (same module-level constants + same `_detect_*` functions in `live_client.py` are reused by VertexNarrativeClient).
+6. The 3-anchor verifiability chain (`pack_root_hash` + `prompt_hash` + `content_hash`) is unchanged. Wire-form output is identical whether AI Studio or Vertex produced the narrative.
+
+### NEW-P13.X.multi-provider-narrative rationale
+
+Different enterprise customers have different LLM provider preferences for procurement / data-residency / sovereignty reasons:
+
+- US fed customers: Anthropic Claude (FedRAMP High pending) or OpenAI Azure Government
+- EU customers wanting on-premise: Llama / Mistral / Qwen on local GPU
+- Customers already paying for OpenAI: prefer to use existing seat
+- Customers in regulated industries with model-bill-of-materials requirements: open-weight Llama / DeepSeek for auditability
+
+Forensa's value (the evidence ledger) is provider-agnostic. The narrative layer should be provider-agnostic too. Each provider subclass is ~225 LOC + tests, identical shape to LiveNarrativeClient. **Important: open-weight local models (Llama, Mistral, DeepSeek) require downloading model weights (~70-400GB) and running local inference (GPU required) - this is a customer-side ops concern, not Forensa's responsibility. Forensa just provides the client abstraction.**
+
+Customer selects provider per-tenant via config. The 4-layer prompt-injection defence is inherited across all subclasses (same module-level functions in `live_client.py`).
 
 ---
 

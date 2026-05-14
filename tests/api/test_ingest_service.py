@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
@@ -11,6 +12,7 @@ from apps.api.ingest_service import (
     DefaultBundleProvider,
     IngestServiceError,
     InMemorySigningKeyProvider,
+    PostgresBundleProvider,
     ingest_event,
 )
 from packages.policy.bundle_builder import build_bundle
@@ -187,3 +189,118 @@ async def test_routes_events_default_providers_callable():
     v1 = await lazy.evaluate(tid, {"kind": "x"})
     v2 = await lazy.evaluate(tid, {"kind": "x"})
     assert v1.policy_bundle_id == v2.policy_bundle_id
+
+
+# ---------------------------------------------------------------------------
+# PostgresBundleProvider (CP9.14 / NEW-P9.8.24)
+#
+# Tests the production-wired bundle provider that reads from / writes to the
+# bundle_repository. Uses a tiny async-context-manager session factory that
+# yields a MagicMock session shaped like the bundle repo expects (scalar_one_or_none
+# for the SELECT, session.add + session.flush for the INSERT fallback path).
+# ---------------------------------------------------------------------------
+
+
+class _AsyncCMSession:
+    """Minimal ``async with`` wrapper around a single mock session.
+
+    The provider does ``async with self._session_factory() as session: ...``
+    so the factory must be a zero-arg callable that returns an instance of an
+    async-context-manager class. This is the test seam.
+    """
+
+    def __init__(self, session: MagicMock) -> None:
+        self._session = session
+
+    async def __aenter__(self) -> MagicMock:
+        return self._session
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
+
+
+def _bundle_session_factory(
+    *,
+    existing_bundle_row=None,
+) -> tuple[Callable[[], _AsyncCMSession], MagicMock]:
+    """Return (factory, the_one_session_the_factory_yields).
+
+    The factory is a zero-arg callable that returns an _AsyncCMSession
+    wrapping a single shared mock session. Tests can then inspect
+    ``session.add.call_args`` etc. after the provider call.
+    """
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none = MagicMock(return_value=existing_bundle_row)
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=result_mock)
+    session.add = MagicMock()
+    session.flush = AsyncMock(return_value=None)
+
+    def factory() -> _AsyncCMSession:
+        return _AsyncCMSession(session)
+
+    return factory, session
+
+
+@pytest.mark.asyncio
+async def test_postgres_bundle_provider_returns_existing_bundle():
+    """Repository has a bundle for this tenant -> provider returns it WITHOUT
+    building or persisting a new one."""
+    from packages.ledger.models import PolicyBundleRow
+
+    tid = uuid4()
+    existing_bundle = build_bundle(
+        tenant_id=tid,
+        version="2.5.1",
+        content={"rules": [{"kind": "x", "decision": "allow"}], "default": "allow"},
+    )
+    row = MagicMock(spec=PolicyBundleRow)
+    row.id = existing_bundle.id
+    row.tenant_id = existing_bundle.tenant_id
+    row.version = existing_bundle.version
+    row.content_hash = existing_bundle.content_hash
+    row.content = existing_bundle.content
+    row.created_at = existing_bundle.created_at
+
+    factory, session = _bundle_session_factory(existing_bundle_row=row)
+    provider = PostgresBundleProvider(factory)
+    found = await provider.get_active_bundle(tid)
+
+    assert found.id == existing_bundle.id
+    assert found.version == "2.5.1"
+    assert found.tenant_id == tid
+    # Must NOT have persisted anything on the hit path.
+    session.add.assert_not_called()
+    session.flush.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_postgres_bundle_provider_persists_default_on_cache_miss():
+    """Repository returns no row -> provider builds default bundle AND
+    persists it via write_bundle so subsequent calls return the same id."""
+    tid = uuid4()
+    factory, session = _bundle_session_factory(existing_bundle_row=None)
+    provider = PostgresBundleProvider(factory)
+    bundle = await provider.get_active_bundle(tid)
+
+    assert bundle.tenant_id == tid
+    assert bundle.version == "1.0.0"
+    # write_bundle calls session.add(row) then session.flush()
+    assert session.add.call_count == 1
+    persisted = session.add.call_args[0][0]
+    assert persisted.tenant_id == tid
+    assert persisted.id == bundle.id
+    session.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_postgres_bundle_provider_uses_custom_fallback_content():
+    """Constructor accepts a ``fallback_content`` override which is used in
+    place of ``DefaultBundleProvider._DEFAULT_CONTENT`` when building the
+    cache-miss bundle."""
+    tid = uuid4()
+    factory, _ = _bundle_session_factory(existing_bundle_row=None)
+    custom = {"rules": [{"kind": "audit", "decision": "escalate"}], "default": "deny"}
+    provider = PostgresBundleProvider(factory, fallback_content=custom)
+    bundle = await provider.get_active_bundle(tid)
+    assert bundle.content == custom

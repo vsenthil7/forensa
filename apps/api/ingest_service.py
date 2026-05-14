@@ -30,6 +30,8 @@ detail endpoint performs).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import Any, ClassVar
 from uuid import UUID, uuid4
@@ -37,6 +39,10 @@ from uuid import UUID, uuid4
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.crypto.sign import generate_keypair
+from packages.ledger.bundle_repository import (
+    get_active_bundle_for_tenant,
+    write_bundle,
+)
 from packages.ledger.receipt_builder import build_receipt, recompute_receipt_hash
 from packages.ledger.repositories import (
     get_latest_receipt_for_tenant,
@@ -140,6 +146,55 @@ class InMemorySigningKeyProvider(TenantSigningKeyProvider):
         priv, _ = generate_keypair()
         self._cache[tenant_id] = priv
         return priv
+
+
+class PostgresBundleProvider(PolicyBundleProvider):
+    """Production ``PolicyBundleProvider`` backed by the bundle repository
+    (CP9.14 / NEW-P9.8.24).
+
+    On each ``get_active_bundle`` call, resolves the most recently created
+    bundle for the tenant via ``get_active_bundle_for_tenant``. If no bundle
+    exists yet, falls back to building and persisting a deny-nothing default
+    (the same content shape ``DefaultBundleProvider`` uses) so the ingest
+    pipeline can run end-to-end for a brand-new tenant.
+
+    The provider takes an ``AsyncSession`` factory (a zero-arg callable that
+    returns a session-scope context manager). This shape avoids coupling the
+    provider to the request-scoped ``Depends(get_session)`` - the provider
+    can be constructed once at app startup and reused.
+
+    For the hackathon demo today, the default ``DefaultBundleProvider``
+    in-memory cache is still wired in ``routes/events.py`` so demos don't
+    need a live DB. Swapping to this Postgres impl is one line at app
+    factory time.
+    """
+
+    def __init__(
+        self,
+        session_factory: Callable[[], AbstractAsyncContextManager[AsyncSession]],
+        *,
+        fallback_content: dict[str, Any] | None = None,
+    ) -> None:
+        self._session_factory = session_factory
+        if fallback_content is not None:
+            self._fallback_content: dict[str, Any] = fallback_content
+        else:
+            self._fallback_content = DefaultBundleProvider._DEFAULT_CONTENT
+
+    async def get_active_bundle(self, tenant_id: UUID) -> PolicyBundle:
+        async with self._session_factory() as session:
+            existing = await get_active_bundle_for_tenant(session, tenant_id)
+            if existing is not None:
+                return existing
+            # No bundle yet for this tenant - build a default and persist it
+            # so subsequent calls return the same bundle (stable content_hash).
+            bundle = build_bundle(
+                tenant_id=tenant_id,
+                version="1.0.0",
+                content=self._fallback_content,
+            )
+            await write_bundle(session, bundle)
+            return bundle
 
 
 # ---------------------------------------------------------------------------

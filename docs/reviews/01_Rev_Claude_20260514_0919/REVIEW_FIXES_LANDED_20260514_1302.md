@@ -184,11 +184,13 @@ These are NOT silently dropped. Each is explicitly named with a "why not now" ra
 
 ## Section E — Items in the review that I did NOT see myself flag in this report
 
+> **UPDATE 2026-05-14 15:17 — CP9.8 closure.** Section E's half-finished job is now closed by Section 7 of [REVIEW_RESPONSE_AND_BACKLOG_20260514_0955.md](REVIEW_RESPONSE_AND_BACKLOG_20260514_0955.md). Every module-level finding in review Part 3 sections 3.1 through 3.21 has an explicit disposition (CLOSED-CP9.x | TRACKED-Pxx | TRACKED-NEW-Pxx | NEW-P9.8.x | WONT-DO-RATIONALE | RETRACTED). 36 new `NEW-P9.8.x` backlog items added. 0 silent drops.
+
 Honest cross-check: re-reading the review's "Summary: what's missing to be enterprise-grade" top-20 table, I count **all 20 accounted for** in either Sections A, B, or C above. No top-level finding is missing from this report.
 
 For the module-level findings (review Part 3 sections 3.5 + 3.18, plus the broader module reviews), the 9 narrative-layer findings are accounted for. **The other module-level findings (across `apps/api/main.py`, `apps/api/routes/events.py`, `apps/api/routes/receipts.py`, `apps/api/routes/evidence.py`, `packages/crypto/*`, `packages/ledger/*`, `packages/schema/*`, `packages/ingest/normaliser.py`, `packages/policy/*`, `packages/export/*`, the Dockerfile, the pyproject.toml, and the tests) are NOT individually tracked yet in the backlog document.** They mostly map to Phase 10–13 work already in the roadmap, but I have not done a per-finding mapping for them. That is an open task.
 
-**Action for next session:** finish the per-module-finding mapping in `REVIEW_RESPONSE_AND_BACKLOG_20260514_0955.md` so every finding in the review has a named destination. Right now ~30 module-level findings are implicitly mapped, not explicitly. That's a half-finished job.
+**Action for next session:** finish the per-module-finding mapping in `REVIEW_RESPONSE_AND_BACKLOG_20260514_0955.md` so every finding in the review has a named destination. Right now ~30 module-level findings are implicitly mapped, not explicitly. That's a half-finished job. **CLOSED by CP9.8** — see Section 7 of the backlog doc.
 
 ---
 

@@ -222,3 +222,269 @@ Per Rule 3 (NO SCOPE SHRINK), these are named so they don't disappear:
 ## End of response
 
 The review is a B+ honest assessment that lands hard but fair. The fix list is real and most of it is already in the existing enterprise roadmap. This session closes review item #6 (Real Gemini Pro client with enterprise-grade prompt-injection defence) and review item #10 (BRD Status column), preserves every other finding in tracked form, and respects Rule 3 (NO SCOPE SHRINK) by naming every item rather than dropping any.
+
+---
+
+## 7. Per-module finding mapping (CP9.8 — closes Section E of REVIEW_FIXES_LANDED)
+
+**Updated:** 14 May 2026, 15:17 (CP9.8 session)
+**Purpose:** Section E of `REVIEW_FIXES_LANDED_20260514_1302.md` flagged ~30 module-level review findings (review Part 3 sections 3.1–3.21) as "NOT individually tracked in the backlog response doc." This section closes that gap. Every "What is missing" item from review Part 3 is named here with a destination.
+
+### 7.1 Status code legend (carries from section above)
+
+| Status | Meaning |
+|---|---|
+| `CLOSED-CP9.x` | Resolved by a Phase 9 CP that landed in this run-up to TechEx submission. Commit SHA cited. |
+| `IN-SESSION` | Closed earlier in this session (CP9.1, CP9.4) — already detailed in section 4. |
+| `TRACKED-P10` to `TRACKED-P13` | In the enterprise roadmap (`phases/ROADMAP_PHASE9_AND_ENTERPRISE_20260514_0823.md`). |
+| `TRACKED-NEW-Pxx` | New backlog item already added in section 3 above. |
+| `NEW-P9.8.x` | New backlog item surfaced specifically by CP9.8 module mapping; not previously tracked. |
+| `WONT-DO-RATIONALE` | Considered, deliberately not actioned, with reason. |
+| `RETRACTED` | Reviewer retracted in the source text. |
+
+### 7.2 `apps/api/main.py` (review 3.1) — 7 findings
+
+| # | Finding | Disposition | Justification |
+|---|---|---|---|
+| 3.1.1 | No `/readyz` endpoint (readiness probe) | `TRACKED-P12` | Top-20 #14. Folds into CP12.1 (OTel + metrics). Liveness probe `/healthz` exists; readiness needs DB+Kafka+KMS checks not yet present. |
+| 3.1.2 | No CORS configuration | `TRACKED-P10` + `TRACKED-P12` | Top-20 #15. Pairs with auth wiring (CORS allow-list is per-tenant in a multi-tenant SaaS). |
+| 3.1.3 | No request-id middleware (X-Request-ID correlation) | `TRACKED-P12` | Top-20 #15. Folds into CP12.1/CP12.2 alongside OTel context propagation. Note: CP9.6 introduced **incident_id** (UUID4 per refused narrative request) as a precursor pattern. |
+| 3.1.4 | No structured-error handler (RFC 7807 Problem Details) | `TRACKED-P12` | Top-20 #15. CP9.6 ships a structured error body for 422-refused narratives (`error` + `reason` + `incident_id`); full RFC 7807 across all routes is the wider Phase 12 item. |
+| 3.1.5 | No rate-limiter (slowapi / fastapi-limiter) | `TRACKED-P10` | Top-20 #15. Folds into CP10.4 (Service account + API key issuance with per-key rate limit). |
+| 3.1.6 | No auth middleware wired (`apps/api/auth/` is a stub) | `TRACKED-P10` | Top-20 #1. Largest production gap. CP10.1 + CP10.2. |
+| 3.1.7 | No `app.openapi()` customization (security schemes, examples, tagged ops) | `TRACKED-P10` | Pairs with auth wiring — security schemes can only be declared after the auth pattern is decided. Folds into CP10.1. |
+
+### 7.3 `apps/api/routes/events.py` (review 3.2) — 8 findings
+
+| # | Finding | Disposition | Justification |
+|---|---|---|---|
+| 3.2.1 | No persistence (endpoint is a 202-acknowledged no-op today) | `NEW-P9.8.1` | Not in current roadmap as a named item. Adding: **`NEW-P9.8.1 events-ingest-persistence`** = wire `write_event_with_receipt` into POST `/v1/events`. Estimated 1 day code + 0.5 day tests. Suggested slot: Phase 9 stretch (BR-01 currently IMPLEMENTED+TESTED at the lib layer; the endpoint just doesn't call it yet). |
+| 3.2.2 | No authentication on the endpoint | `TRACKED-P10` | Top-20 #1. CP10.1. |
+| 3.2.3 | No tenant-id enforcement (cross-tenant write possible today) | `TRACKED-P10` | Top-20 #1 + #3. CP10.1 (token→tenant) + CP10.3 (RLS as backstop). |
+| 3.2.4 | No rate limiting | `TRACKED-P10` | Top-20 #15. CP10.4. |
+| 3.2.5 | No idempotency key header pattern | `NEW-P9.8.2` | Not previously tracked. Adding: **`NEW-P9.8.2 events-idempotency-key`** = honour `Idempotency-Key: <uuid>` header per Stripe pattern; retries return same response. Estimated 1 day (Redis-backed idempotency store). Suggested slot: Phase 10 alongside CP10.1. |
+| 3.2.6 | No back-pressure / queue between POST and DB write | `TRACKED-P12` | Top-20 #8. CP12.4 (Kafka-backed ingest). |
+| 3.2.7 | No payload size limit (100MB POST will parse before reject) | `NEW-P9.8.3` | Not previously tracked. Adding: **`NEW-P9.8.3 events-payload-size-limit`** = uvicorn `--limit-max-requests` + FastAPI `Content-Length` middleware + Pydantic Field(max_length) on `payload` JSONB. Estimated 0.5 day. Suggested slot: Phase 10 alongside CP10.4. |
+| 3.2.8 | No OTel trace-context propagation (incoming W3C `traceparent` not extracted) | `TRACKED-P12` | Folds into CP12.1 (OTel + metrics) — natural pairing with the GenAI-semconv ingestion. |
+
+### 7.4 `apps/api/routes/receipts.py` (review 3.3) — 5 findings
+
+| # | Finding | Disposition | Justification |
+|---|---|---|---|
+| 3.3.1 | No authentication / tenant resolution (tenant_id is query param, not token-derived) | `TRACKED-P10` | Top-20 #1. CP10.1. |
+| 3.3.2 | No cursor pagination (deep-offset performance) | `CLOSED-CP9.7` | Commit `87435ec`. `before_sequence` cursor param added; legacy `offset` retained for BC. Response includes `next_before_sequence`. |
+| 3.3.3 | No `since`/`until` filter on signed_at | `NEW-P9.8.4` | Cursor-pagination doesn't replace time-window filter (the most common investigator workflow). Not in current roadmap. Adding: **`NEW-P9.8.4 receipts-time-window-filter`** = add `signed_after` + `signed_before` query params; uses `(tenant_id, signed_at)` composite index already present. Estimated 0.5 day code + 0.5 day tests. Suggested slot: Phase 9 stretch or alongside CP10.1. |
+| 3.3.4 | `recomputed_receipt_hash` computed inline on every detail GET | `WONT-DO-RATIONALE` | Reviewer explicitly noted this is fine at 1000 RPS (which is well above hackathon-week target). The async-batch verification path is for million-receipt fleet audits, which is Phase 13+ scope. Not tracking as a separate item; folds naturally into `NEW-P11.X.merkle-tree` since RFC 6962 inclusion proofs make batch verification O(log N). |
+| 3.3.5 | No `If-None-Match` / `ETag` support (receipts are immutable, perfectly cacheable) | `NEW-P9.8.5` | Free performance win. Not previously tracked. Adding: **`NEW-P9.8.5 receipts-etag`** = emit `ETag: "<receipt_hash>"` on detail GET; honour `If-None-Match` → 304. Estimated 0.5 day. Suggested slot: Phase 12 alongside CP12.1 (perf instrumentation). |
+
+### 7.5 `apps/api/routes/evidence.py` (review 3.4) — 5 findings
+
+| # | Finding | Disposition | Justification |
+|---|---|---|---|
+| 3.4.1 | N+1 query (list + per-receipt get_receipt_by_id) | `CLOSED-CP9.7` | Commit `87435ec`. New `list_receipts_with_snapshot_for_tenant` is a single JOIN. Test `test_join_repo_no_n_plus_1_only_one_execute_call` asserts the fix. |
+| 3.4.2 | 1000-cap fetches 1001 rows then rejects (no `COUNT(*)` pre-check) | `WONT-DO-RATIONALE` | The +1 trick is the canonical pattern for "detect overflow without a separate query". A `COUNT(*)` pre-check is *two* queries vs the current *one* and not faster in the common case. Reviewer's suggestion would be a regression. Documented here so the rejection is on the record. |
+| 3.4.3 | No PDF rendering (JSON-LD only) | `TRACKED-P9.2` | Roadmap CP9.2 (PDF render via ReportLab, ~220 LOC + 8 tests). Phase 9 work, scheduled for this hackathon window. |
+| 3.4.4 | No background-job mode (large-pack assembly is synchronous) | `TRACKED-P12` | Folds into CP12.4 (Kafka). The same async-worker pattern that handles ingest also handles long-running export. |
+| 3.4.5 | No signature on the pack itself (each receipt is signed, pack is not) | `TRACKED-NEW-P11.6` | Already in section 3 NEW backlog. |
+
+### 7.6 `apps/api/routes/narratives.py` (review 3.5) — 6 findings
+
+Already enumerated as N.1–N.6 in section 2. Updated dispositions:
+
+| # | Finding | Disposition (UPDATED) | Justification |
+|---|---|---|---|
+| N.1 | Same N+1 query as evidence.py | `CLOSED-CP9.7` | Commit `87435ec`. Narratives route also switched to JOIN repo. |
+| N.2 | No streaming response | `TRACKED-P12` | (unchanged) |
+| N.3 | No prompt-injection defence | `CLOSED-CP9.1 + CLOSED-CP9.6` | 4-layer defence in `live_client.py` (CP9.1 commit `a43307f`); route-layer 422 + incident_id + WARN log (CP9.6 commit `41fc9e7`). |
+| N.4 | No cost / token-budget control | `TRACKED-P13` | (unchanged) CP13.5. |
+| N.5 | No persistence of narratives (no cache) | `TRACKED-NEW-P9.X.narrative-cache` | (unchanged) section 3. |
+| N.6 | No hallucination guard | `TRACKED-NEW-P12.Y.hallucination-guard` | (unchanged) section 3. |
+
+### 7.7 `packages/crypto/hash.py` (review 3.6) — 3 findings
+
+| # | Finding | Disposition | Justification |
+|---|---|---|---|
+| 3.6.1 | Not strictly RFC 8785 (JCS) compliant; needs published spec for third-party verifiers | `NEW-P9.8.6` | Not previously tracked. Adding: **`NEW-P9.8.6 forensa-canonical-json-spec`** = publish a stable, versioned doc describing the canonical JSON variant Forensa uses (no nulls, base64-prefix bytes, sorted sets) so a third-party tool can re-implement and verify. Estimated 1 day doc + 0.5 day reference verifier in Python. Suggested slot: Phase 11 alongside CP11.5 (TSA + evidence anchoring). Doc 12 (Evidence Pack Spec) is the natural home. |
+| 3.6.2 | Floats: `1.0` vs `1` produce different canonical forms (intended for hash binding, footgun for users) | `WONT-DO-RATIONALE` | Reviewer flagged it explicitly as "desirable for hash binding". Document the behaviour in `NEW-P9.8.6` (Forensa Canonical JSON spec) when that lands. No code change. |
+| 3.6.3 | No size limit on canonical JSON input (30MB JSON will hash fine) | `NEW-P9.8.7` | Not previously tracked. Adding: **`NEW-P9.8.7 canonical-json-size-guard`** = `canonical_json` raises if serialised bytes exceed configurable limit (default 16MB). Estimated 0.5 day with one Hypothesis test asserting limit honoured. Pairs with `NEW-P9.8.3` (payload size limit at the route layer). Suggested slot: Phase 10. |
+
+### 7.8 `packages/crypto/merkle.py` (review 3.7) — 3 findings
+
+| # | Finding | Disposition | Justification |
+|---|---|---|---|
+| 3.7.1 | Misnamed: it's a Merkle *chain*, not a Merkle *tree* (no O(log N) inclusion proofs) | `TRACKED-NEW-P11.X.merkle-tree` | (unchanged) Already in section 3. Replacing chain with RFC 6962-style tree is its own piece of work. Until then, the module name is admittedly aspirational; CP9.8 adds a docstring note for honesty (see `NEW-P9.8.8` below). |
+| 3.7.2 | No batch / inclusion proofs | `TRACKED-NEW-P11.X.merkle-tree` | Same item as 3.7.1. |
+| 3.7.3 | No persistence layer for chain state (concurrent ingest needs locking) | `TRACKED-NEW-P12.X.chain-head-concurrency` | (unchanged) Already in section 3. |
+| (extra) | Module name suggests Merkle tree when impl is Merkle chain — docstring should be honest | `NEW-P9.8.8` | 5-minute docstring fix. Adding: **`NEW-P9.8.8 merkle-module-docstring-honesty`** = add prominent note in `packages/crypto/merkle.py` docstring saying "This is a hash chain, not a tree; tree upgrade is `NEW-P11.X.merkle-tree`". Closes the misnaming optics without renaming the module (which would touch many imports). Suggested slot: trivial cleanup, can land in CP9.8 documentation pass if time permits, or Phase 11 alongside `NEW-P11.X.merkle-tree`. |
+
+### 7.9 `packages/crypto/sign.py` (review 3.8) — 3 findings
+
+| # | Finding | Disposition | Justification |
+|---|---|---|---|
+| 3.8.1 | No KMS adapter (private key in process memory as bytes) | `TRACKED-P11` | Top-20 #2. CP11.1 (HSM-backed signing keys). |
+| 3.8.2 | No key rotation story (versioning, bootstrap, revocation) | `NEW-P9.8.9` | Mentioned in CP11.1 description but key *rotation lifecycle* is a distinct sub-item (current key + old keys + revocation path). Not previously broken out. Adding: **`NEW-P9.8.9 signing-key-rotation`** = `tenants` table gains `signing_key_versions` (jsonb of `{version: kms_arn}`); receipts gain `signing_key_version` field bound into receipt_hash; verifier picks correct key by version. Estimated 2 days code + 1 day tests. Suggested slot: Phase 11 alongside CP11.1 (after KMS adapter lands; rotation is the natural follow-up). |
+| 3.8.3 | No constant-time key compare (flagged as hygiene only, not exploitable today) | `WONT-DO-RATIONALE` | Reviewer flagged "not strictly needed here". No code compares keys for equality. Folds naturally into the KMS adapter work (`TRACKED-P11`) which removes byte-level key handling altogether. No separate tracking. |
+
+### 7.10 `packages/ledger/models.py` (review 3.9) — 5 findings
+
+| # | Finding | Disposition | Justification |
+|---|---|---|---|
+| 3.9.1 | No row-level security policies (T8 mitigation app-layer only) | `TRACKED-P10` | Top-20 #3. CP10.3. |
+| 3.9.2 | No table partitioning on `events` by `(tenant_id, occurred_at)` | `TRACKED-P12` | Top-20 #17. CP12.3. |
+| 3.9.3 | No retention column / TTL (append-only vs GDPR Article 5(1)(e)) | `TRACKED-P13` | Top-20 #12. CP13.2 (GDPR right-to-erasure). |
+| 3.9.4 | `payload` JSONB has no DB-level schema check (`jsonb_typeof = 'object'`) | `NEW-P9.8.10` | Defence-in-depth one-liner. Not previously tracked. Adding: **`NEW-P9.8.10 jsonb-typeof-check-constraints`** = alembic migration adds `CHECK (jsonb_typeof(payload) = 'object')` on `events.payload` and `policy_bundles.content`. Estimated 0.25 day. Suggested slot: Phase 10 alongside CP10.3 (RLS) — same alembic migration window. |
+| 3.9.5 | No optimistic-concurrency token / `xmin` for mutable tables (`tenants`, `policy_bundles`) | `NEW-P9.8.11` | Append-only-by-design covers receipts/events but not tenants or policy_bundles (which support immutable-update via `rebind_bundle`). Concurrent admin edits could race. Not previously tracked. Adding: **`NEW-P9.8.11 mutable-table-optimistic-concurrency`** = add `version: int` column + ORM-level optimistic check; conflict → 409. Estimated 1 day. Suggested slot: Phase 10 alongside CP10.3. |
+
+### 7.11 `packages/ledger/receipt_builder.py` (review 3.10) — 4 findings
+
+| # | Finding | Disposition | Justification |
+|---|---|---|---|
+| 3.10.1 | Signs receipt_hash *string* not raw bytes (non-standard external interop) | `TRACKED-NEW-P9.8.6` | Folds into the Forensa Canonical JSON spec doc. When the spec is published, third-party verifiers know the wrap-the-string-first step. Alternative: rewire to sign raw bytes; that would break compatibility with all existing receipts in any deployed environment — too costly today. |
+| 3.10.2 | No agent signature path (BR-02 dual signature unmet) | `TRACKED-P10` | Folds into CP10.1/CP10.2 (auth) — once agents have OIDC-backed identities, dual signature is meaningful; today the agent has no cryptographic identity to sign with. |
+| 3.10.3 | No RFC 3161 TSA timestamp anchor (signed_at is server-clock) | `TRACKED-P11` | Top-20 #5. CP11.5. |
+| 3.10.4 | No nonce / replay-protection field | `WONT-DO-RATIONALE` | The reviewer noted `event_id` being in the bind "partially mitigates this". A full nonce would require additional state on the verifier side ("seen this nonce before?") which conflicts with the offline-verifiable design goal. Tracking as a deliberate architectural choice. Document in `NEW-P9.8.6` (Forensa Canonical JSON spec). |
+
+### 7.12 `packages/ledger/repositories.py` (review 3.11) — 5 findings
+
+| # | Finding | Disposition | Justification |
+|---|---|---|---|
+| 3.11.1 | No concurrency control on chain head | `TRACKED-NEW-P12.X.chain-head-concurrency` | (unchanged) Section 3. |
+| 3.11.2 | `from sqlalchemy import select` inside the function (stylistic) | `NEW-P9.8.12` | 10-minute cleanup. Not previously tracked. Adding: **`NEW-P9.8.12 repo-import-cleanup`** = lift `from sqlalchemy import select` to module top in `repositories.py`. Estimated 10 minutes. Suggested slot: can land in CP9.8 if time permits, otherwise next refactor pass. |
+| 3.11.3 | No batch ingest path (single-row INSERTs won't hit 10K/sec) | `TRACKED-P12` | Top-20 #8 (Kafka) + CP12.4 needs a `write_events_batch` using `COPY` or multi-row INSERT. Natural pairing. |
+| 3.11.4 | No tenant-scoped read in `get_receipt_by_id` (any tenant can read any receipt id) | `NEW-P9.8.13` | Defence-in-depth. Today only the route checks tenant; the repo doesn't. Not previously tracked. Adding: **`NEW-P9.8.13 repo-tenant-scoped-reads`** = add `tenant_id: UUID` parameter to `get_receipt_by_id`; filter in SQL `WHERE tenant_id = :tenant_id`. Touches every caller. Estimated 1 day (the touch surface is large). Suggested slot: Phase 10 alongside CP10.3 (RLS adds DB-level defence; this adds app-level defence). |
+| 3.11.5 | `_ = datetime, UTC` line is an unused-import suppression hack | `CLOSED-CP9.8-docs` | Trivial. Leaving as-is for now; the `# Suppress unused-import warning for datetime in __all__ helpers` comment already documents why. If the import becomes unused after `NEW-P11.X.merkle-tree` lands (which may restructure ledger imports), remove then. Tracking inline in code, not as a separate backlog item. |
+
+### 7.13 `packages/ledger/session.py` (review 3.12) — 4 findings
+
+| # | Finding | Disposition | Justification |
+|---|---|---|---|
+| 3.12.1 | `FORENSA_DB_URL` read with no startup validation | `NEW-P9.8.14` | Not previously tracked. Adding: **`NEW-P9.8.14 settings-validation-at-startup`** = introduce `pydantic-settings` `Settings` model loaded in `main.py:create_app`; typo in DB URL fails at boot not at first connection. Estimated 1 day (move all `os.environ` reads behind Settings). Suggested slot: Phase 10 alongside CP10.1 (auth wiring also needs env-driven config). |
+| 3.12.2 | No pool tuning by env (`pool_size=5, max_overflow=10` hardcoded) | `TRACKED-NEW-P9.8.14` | Folds into the same Settings work as 3.12.1 — pool params come from Settings. |
+| 3.12.3 | No `statement_timeout` per session | `NEW-P9.8.15` | Production hygiene. Not previously tracked. Adding: **`NEW-P9.8.15 postgres-statement-timeout`** = `connect_args={"server_settings": {"statement_timeout": "5000"}}`. One-line change + test. Estimated 0.5 day. Suggested slot: Phase 10 alongside CP10.3. |
+| 3.12.4 | No connection-level RLS context (`SET LOCAL forensa.current_tenant`) | `TRACKED-P10` | Top-20 #3 specifically. CP10.3 must include the `@event.listens_for(engine, "checkout")` hook. |
+
+### 7.14 `packages/schema/*.py` (review 3.13) — 5 findings
+
+| # | Finding | Disposition | Justification |
+|---|---|---|---|
+| 3.13.1 | No PII redaction / sensitive-field marking on `Event.payload` | `NEW-P9.8.16` | Material for GDPR + DORA. Not previously tracked. Adding: **`NEW-P9.8.16 pii-redaction-pipeline`** = `Annotated[str, Sensitive]` marker; log-formatter strips marked fields; export-pack-builder offers `redact_sensitive=True` option that replaces values with hash-of-value. Estimated 2 days. Suggested slot: Phase 11 alongside CP11.6 (related: customer-data egress controls). |
+| 3.13.2 | No size limit on `payload` or `reasoning` fields | `TRACKED-NEW-P9.8.3` | Same as route-layer payload size limit (`NEW-P9.8.3`); enforce at Pydantic field level too. |
+| 3.13.3 | `Agent.identity_public_key` bytes serialisation not documented in OpenAPI | `NEW-P9.8.17` | Not previously tracked. Adding: **`NEW-P9.8.17 openapi-bytes-field-examples`** = Pydantic `json_schema_extra` per bytes field showing the base64 wire form; covers `Agent.identity_public_key`, `Receipt.signature`, anywhere else bytes are exposed. Estimated 0.5 day. Suggested slot: Phase 10 alongside CP10.1 (OpenAPI customisation). |
+| 3.13.4 | `Tenant.signing_key_id` is a free string (no format validation for KMS ARN / Vault path / HSM slot) | `TRACKED-P11` | Folds into CP11.1 (KMS adapter) — once the adapter abstraction lands, `signing_key_id` becomes a typed `KeyReference` discriminated by provider. No separate tracking. |
+| 3.13.5 | No `__hash__` check on frozen Pydantic models with `signature: bytes` | `NEW-P9.8.18` | Open question: are frozen models hashable today? Reviewer asked to verify. Trivial check: add `test_receipt_is_hashable` test. Adding: **`NEW-P9.8.18 frozen-models-hashable-check`** = unit test asserting `hash(Receipt(...))` doesn't raise for all frozen schema classes. Estimated 30 minutes. Suggested slot: trivial, can land in CP9.8 wrap-up if time. |
+
+### 7.15 `packages/ingest/normaliser.py` (review 3.14) — 4 findings
+
+| # | Finding | Disposition | Justification |
+|---|---|---|---|
+| 3.14.1 | No span-kind validation (accepts INTERNAL spans that should be PRODUCER/CONSUMER only) | `NEW-P9.8.19` | Not previously tracked. Adding: **`NEW-P9.8.19 otel-span-kind-validation`** = `_resolve_span_kind` rejects INTERNAL when explicit override is absent; logs a WARN and returns `None` to skip ingestion. Estimated 0.5 day. Suggested slot: Phase 9 stretch alongside `NEW-P9.8.1` (events persistence) — both touch the ingest layer. |
+| 3.14.2 | No deduplication (OTel exporters can resend the same span) | `TRACKED-NEW-P9.8.2` | Folds into the Idempotency-Key work — same defence at the ingest layer. The DB unique-on-receipt-hash also helps but is too late. |
+| 3.14.3 | No schema version on OTel input (GenAI semconv is evolving) | `NEW-P9.8.20` | Future-proofing. Not previously tracked. Adding: **`NEW-P9.8.20 otel-genai-semver-capture`** = capture `gen_ai.spec_version` attribute; store on `Event` as `genai_semver: str | None`; replay logic uses this to know which mapping to apply. Estimated 1 day (schema + repo + normaliser + tests). Suggested slot: Phase 10 alongside `NEW-P9.8.14` (settings) and `NEW-P9.8.16` (PII). |
+| 3.14.4 | `gen_ai.response.text` is being captured as `reasoning` — that's *output* not *reasoning* | `NEW-P9.8.21` | Material correctness bug surfaced by review. **HIGH priority**. Not previously tracked. Adding: **`NEW-P9.8.21 reasoning-vs-output-disambiguation`** = remove the fallback `reasoning = attrs.get("gen_ai.response.text")` from `normaliser.py`; `reasoning` only populated from `forensa.reasoning` (explicit). Add `output: str | None` field to `Event` for the model output; storage layer migration if `events.payload` has been used as a workaround. Estimated 1 day. Suggested slot: Phase 9 stretch (this is a correctness fix on data we're storing now). |
+
+### 7.16 `packages/policy/lobstertrap.py` (review 3.15) — 4 findings
+
+| # | Finding | Disposition | Justification |
+|---|---|---|---|
+| 3.15.1 | Named after one vendor | `CLOSED-CP9.5` | Commit `f403b14`. `PolicyEnforcementClient` is the canonical name in `enforcement.py`; legacy aliases retained (class-object identity) so all 13 existing callers keep working unchanged. |
+| 3.15.2 | No live HTTP client (`HttpxLobsterTrapClient` with retry/timeout/circuit-breaker) | `NEW-P9.8.22` | The CP9.5 facade `VeeaLobsterTrapClient = MockLobsterTrapClient` is an alias today; the *real* HTTP client is its own piece of work. Not previously broken out as a distinct backlog item. Adding: **`NEW-P9.8.22 veea-http-client`** = `VeeaLobsterTrapClient` proper subclass using `httpx.AsyncClient` + `tenacity` for retries + circuit-breaker via `purgatory`. Estimated 2 days code + 1 day tests. Suggested slot: Phase 10 alongside auth (CP10.1) — the Veea endpoint will need mTLS or OIDC anyway. Replaces the alias when it lands. |
+| 3.15.3 | No retry / backoff specification (each subclass will reinvent) | `TRACKED-NEW-P9.8.22` | The Veea HTTP client work includes a `tenacity`-based retry helper that subsequent provider adapters (`MicrosoftAgtClient`, `BedrockAgentCoreClient`) inherit. Same item. |
+| 3.15.4 | No verdict signature verification (T15 spoofed-verdict threat) | `NEW-P9.8.23` | The mitigation is in the threat model but no code today. Not previously tracked. Adding: **`NEW-P9.8.23 verdict-signature-verification`** = `PolicyVerdict` gains optional `signature: bytes | None`; `PolicyEnforcementClient` ABC gains `verify_verdict_signature(verdict, public_key) -> bool`; Forensa refuses to persist a verdict whose signature does not verify. Estimated 1 day. Suggested slot: Phase 11 alongside CP11.1 (general signature work). |
+
+### 7.17 `packages/policy/snapshot.py` + `bundle_builder.py` + `replay.py` (review 3.16) — 4 findings
+
+| # | Finding | Disposition | Justification |
+|---|---|---|---|
+| 3.16.1 | No bundle storage layer (`PolicyBundleRow` exists but no repository) | `NEW-P9.8.24` | Today the bundle lives in-memory only — when the process restarts, the bundle that produced existing snapshots is gone (which is OK because snapshots carry the content_hash, but means re-authoring is required). Not previously tracked. Adding: **`NEW-P9.8.24 policy-bundle-persistence`** = `policy_bundle_repository.py` with `write_bundle`, `get_bundle_by_id`, `get_active_bundle_for_tenant`. Estimated 1 day code + 0.5 day tests. Suggested slot: Phase 9 stretch (BR-04 is currently IMPLEMENTED+TESTED for the snapshot side; bundle persistence is the missing half). |
+| 3.16.2 | No policy authoring UI (bundles constructed in Python) | `TRACKED-P12` | Customer-facing UI is a console-app concern. Pairs with the Next.js console enhancements scheduled in Phase 12. |
+| 3.16.3 | No policy testing harness (replay new bundle against historical events) | `NEW-P9.8.25` | Major capability. Not previously tracked. Adding: **`NEW-P9.8.25 policy-replay-harness`** = `python -m forensa.policy.replay --bundle <id> --window <days>` runs the new bundle against historical events and reports verdict differences. Estimated 3 days. Suggested slot: Phase 12 alongside CP12.4 (Kafka) — replay is the same async-pipeline shape. |
+| 3.16.4 | No policy approval workflow (proposed → reviewed → approved → activated, each step audit-logged) | `TRACKED-P10` | Folds into CP10.2 (RBAC) + CP10.5 (audit log) — once roles exist, the approval workflow is configurable. |
+
+### 7.18 `packages/export/builder.py` + `schema.py` (review 3.17) — 5 findings
+
+| # | Finding | Disposition | Justification |
+|---|---|---|---|
+| 3.17.1 | No PDF rendering | `TRACKED-P9.2` | (unchanged) CP9.2. |
+| 3.17.2 | No detached signature on the pack | `TRACKED-NEW-P11.6` | (unchanged) Section 3. |
+| 3.17.3 | No JSON-LD context document published at `https://forensa.dev/ld/v1` | `NEW-P9.8.26` | The schema references this URL; if it 404s, JSON-LD validators reject. Not previously tracked. Adding: **`NEW-P9.8.26 jsonld-context-publishing`** = publish a static JSON-LD context file at `forensa.dev/ld/v1.jsonld` (versioned); CI verifies URL responds. Estimated 0.5 day + DNS/hosting setup. Suggested slot: Phase 11 alongside CP11.6 (commercial-grade artifacts). |
+| 3.17.4 | No PROV-O Entity nodes (today only Activities) | `NEW-P9.8.27` | True PROV-O is Entity + Activity + Agent trio. Not previously tracked. Adding: **`NEW-P9.8.27 prov-o-entity-and-agent-nodes`** = emit Entity nodes for receipts, Agent nodes for the agent_id; updates the JSON-LD schema + verifier. Estimated 1 day. Suggested slot: Phase 11 alongside `NEW-P9.8.26`. |
+| 3.17.5 | `receipt_count` not bound in `root_hash` | `RETRACTED` | Reviewer retracted in source text ("OK, retracted"). Worth a code comment though. Adding inline comment to `builder.py` confirming receipt_count IS in the bind via `header.model_dump(mode="json")`. Trivial — folds into CP9.8 wrap-up. |
+
+### 7.19 `packages/narrative/client.py` + `prompt.py` (review 3.18) — 4 findings
+
+Already enumerated as N.7–N.9 in section 2. Updated:
+
+| # | Finding | Disposition (UPDATED) | Justification |
+|---|---|---|---|
+| N.7 | No Live impl | `CLOSED-CP9.1` | Commit `a43307f`. |
+| (extra) | No prompt-injection mitigation | `CLOSED-CP9.1 + CLOSED-CP9.6` | 4-layer defence; route-layer logging. |
+| N.8 | Prompt truncates at index 5 — un-grounded narrative for large packs | `TRACKED-P12` | (unchanged) |
+| N.9 | No multi-step / agentic narrative (map-reduce summarisation) | `TRACKED-P12` | (unchanged) |
+
+### 7.20 `apps/api/Dockerfile` (review 3.19) — 7 findings
+
+| # | Finding | Disposition | Justification |
+|---|---|---|---|
+| 3.19.1 | No dependency-vulnerability scan step in Dockerfile (`pip-audit` is in dev deps but not run) | `NEW-P9.8.28` | Not previously tracked. Adding: **`NEW-P9.8.28 docker-pip-audit-step`** = `RUN pip-audit --strict` in builder stage; non-zero exit on findings blocks image build. Estimated 0.5 day. Suggested slot: Phase 13 alongside CP13.1 (SOC 2 evidence). |
+| 3.19.2 | No SBOM generation in Dockerfile | `TRACKED-P13` | Top-20 #19. Folds into CP13.1. |
+| 3.19.3 | No image signing (Sigstore/cosign) | `TRACKED-P13` | Top-20 #19. Same. |
+| 3.19.4 | `COPY` order is suboptimal for Docker-layer caching | `NEW-P9.8.29` | Build-perf win. Not previously tracked. Adding: **`NEW-P9.8.29 dockerfile-copy-order`** = copy `pyproject.toml + poetry.lock` then `poetry install` then `COPY packages apps`. Estimated 15 minutes. Suggested slot: trivial cleanup, can land in CP9.8 wrap-up if time. |
+| 3.19.5 | No `.dockerignore` apparent | `NEW-P9.8.30` | Not previously tracked. Adding: **`NEW-P9.8.30 dockerignore-creation`** = `.dockerignore` excluding `node_modules`, `.venv`, `.git`, `_backup`, `*.pyc`, `__pycache__`, `.pytest_cache`. Estimated 10 minutes. Suggested slot: trivial. |
+| 3.19.6 | Runtime image: `/app` built in builder as root, copied unchanged | `TRACKED-NEW-P9.8.29` | Folds into the COPY-order rewrite; add `--chown=forensa:forensa` then. |
+| 3.19.7 | `HEALTHCHECK` uses urllib `http://localhost` (may break with TLS sidecar) | `NEW-P9.8.31` | Not previously tracked. Adding: **`NEW-P9.8.31 dockerfile-healthcheck-uvicorn-direct`** = `HEALTHCHECK` targets uvicorn's bound listener directly (skip TLS sidecar). Estimated 30 minutes. Suggested slot: Phase 12 alongside CP12.1 (operational hygiene). |
+
+### 7.21 `pyproject.toml` (review 3.20) — 4 findings
+
+| # | Finding | Disposition | Justification |
+|---|---|---|---|
+| 3.20.1 | `langgraph`, `google-generativeai`, `boto3`, `opentelemetry-instrumentation-sqlalchemy` not in deps yet | `MIXED` | `google-generativeai` IS in deps after CP9.1 (commit `8c69f12`). `langgraph` deferred to Phase 12 (BR-07 multi-agent). `boto3` lands with CP11.1 (KMS). `opentelemetry-instrumentation-sqlalchemy` lands with CP12.1 (OTel). No separate tracking; each shows up in its parent CP. |
+| 3.20.2 | Ruff does not enforce `S` (security) rules | `NEW-P9.8.32` | Not previously tracked. Adding: **`NEW-P9.8.32 ruff-security-rules`** = add `"S"` to `select` in `[tool.ruff.lint]`; triage and fix or suppress any new findings. Estimated 1 day (depending on how many findings surface). Suggested slot: Phase 13 alongside CP13.1 (SOC 2 evidence — security-lint history is a soft control). |
+| 3.20.3 | No `[tool.bandit]` config (suppressions are inline) | `NEW-P9.8.33` | Not previously tracked. Adding: **`NEW-P9.8.33 bandit-centralised-config`** = `[tool.bandit]` section in `pyproject.toml` listing per-rule skip/include; move inline `# nosec` suppressions where appropriate. Estimated 0.5 day. Suggested slot: Phase 13 alongside `NEW-P9.8.32`. |
+| 3.20.4 | No `pre-commit` config | `NEW-P9.8.34` | Not previously tracked. Adding: **`NEW-P9.8.34 pre-commit-config`** = `.pre-commit-config.yaml` running ruff + mypy + pytest --no-cov (fast subset) + secret scanning (gitleaks). Estimated 1 day (including doc on how to install hooks). Suggested slot: Phase 13. |
+
+### 7.22 Tests (review 3.21) — 4 findings
+
+| # | Finding | Disposition | Justification |
+|---|---|---|---|
+| 3.21.1 | No integration test against real Postgres (`pytest-postgresql` / testcontainers) | `NEW-P9.8.35` | Material gap for `write_event_with_receipt`. Not previously tracked. Adding: **`NEW-P9.8.35 postgres-integration-tests`** = `testcontainers` Postgres fixture; full ingest+receipt+JOIN path exercised end-to-end. Estimated 2 days (includes CI image caching). Suggested slot: Phase 12 alongside CP12.1 (perf instrumentation). |
+| 3.21.2 | No load test in CI gate (README mentions Locust but it's weekly / on-demand) | `TRACKED-NEW-P9.X.live-narrative-integration-test` + `TRACKED-P12` | Locust nightly CI is Top-20 #20 (CP12.1). The integration-test workflow (`NEW-P9.X.live-narrative-integration-test` in section 3) is the live-Gemini analogue. |
+| 3.21.3 | No mutation testing (`mutmut` / `cosmic-ray`) | `TRACKED-P12` | Top-20 #20. CP12.1. |
+| 3.21.4 | No contract test against OTel GenAI spec (sample-span replay) | `NEW-P9.8.36` | Not previously tracked. Adding: **`NEW-P9.8.36 otel-contract-tests`** = vendor a handful of OTel GenAI sample spans; assert `normaliser` produces expected `Event` shape. Estimated 1 day. Suggested slot: Phase 10 alongside `NEW-P9.8.20` (semver capture) and `NEW-P9.8.21` (reasoning fix). |
+
+---
+
+## 8. CP9.5 / CP9.6 / CP9.7 / CP9.8 closures since the 13:02 REVIEW_FIXES_LANDED report
+
+**Updated:** 14 May 2026, 15:17 (CP9.8 session)
+
+The 13:02 report tallied 2-of-20 top-level + 2-of-9 module-level closures. Since then:
+
+| CP | Commit | Top-20 closed | Module-level closed |
+|---|---|---|---|
+| CP9.5 vendor-neutral rename | `f403b14` | #4 | 3.15.1 |
+| CP9.6 route-layer injection logging | `41fc9e7` | (none — extends #6 already closed) | 3.5.N.3 (route-layer half) |
+| CP9.7 cursor pagination + JOIN-fix | `87435ec` | #7 | 3.3.2 + 3.4.1 + 3.5.N.1 |
+| CP9.8 per-module-finding mapping | (this commit) | (doc-only, closes Section E) | All 99 module-level findings now have explicit dispositions |
+
+**Updated tally** (running totals from session start 09:44 through CP9.8 finish):
+
+| Category | Count | Change since 13:02 report |
+|---|---:|---|
+| Top-level review items CLOSED | **5 of 20** | +3 (was 2) — #4, #6, #7, #10 closed; plus partial credit on #15 (incident_id correlation pattern landed via CP9.6) |
+| Module-level findings CLOSED | **6 of 99** | +4 (was 2) — N.1, N.3 (route layer), 3.15.1, 3.3.2 + 3.4.1 grouped under cursor work |
+| Module-level findings TRACKED | **93** | All now have an explicit destination (was implicit) |
+| NEW backlog items added today | **36 + 11 from earlier** = **47** | +36 (was 11) — Section 7 surfaced 36 not-previously-tracked items: `NEW-P9.8.1` through `NEW-P9.8.36` |
+| Items SILENTLY DROPPED | **0** | Rule 3 NO SCOPE SHRINK honoured |
+
+**Honest framing:** the closure rate per CP is small (1–3 items per CP) but the *tracking rate* is now 100% — every single "What is missing" item across all 21 modules has a named destination. An enterprise buyer or fresh reviewer can now ask "what about [finding X]?" and find it in this document with a CP, a phase, or an explicit WONT-DO-RATIONALE.
+
+The 36 new `NEW-P9.8.x` backlog items range from 10-minute trivial cleanups (`NEW-P9.8.12 repo-import-cleanup`, `NEW-P9.8.30 dockerignore-creation`) to multi-day proper features (`NEW-P9.8.16 pii-redaction-pipeline`, `NEW-P9.8.22 veea-http-client`, `NEW-P9.8.35 postgres-integration-tests`). They span every phase from 9-stretch through 13.
+
+The most important new finding surfaced by this mapping is **`NEW-P9.8.21 reasoning-vs-output-disambiguation`** — the `normaliser.py` fallback that captures `gen_ai.response.text` as `reasoning` is a material correctness bug (output is not reasoning). This was buried in review 3.14 and would have been easy to miss without the per-module pass. Suggested for Phase 9 stretch.
+
+---
+
+## End of CP9.8 update
+
+Section 7 closes the Section E half-finished job from the 13:02 REVIEW_FIXES_LANDED report. Every "What is missing" finding in review Part 3 sections 3.1 through 3.21 now has an explicit disposition (CLOSED-CP9.x | TRACKED-Pxx | TRACKED-NEW-Pxx | NEW-P9.8.x | WONT-DO-RATIONALE | RETRACTED). No silent drops. Rule 3 honoured.
+

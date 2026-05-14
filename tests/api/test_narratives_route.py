@@ -263,3 +263,160 @@ async def test_generate_narrative_filters_out_of_window_receipts(app, client):
     body = response.json()
     assert body["narrative_text"]
     app.dependency_overrides.clear()
+
+
+# ========== CP9.6: defence-triggered refusals return 422 + correlation id ==========
+
+
+class _InjectionRaisingClient(MockNarrativeClient):
+    """Test stub: Mock client that raises Layer-3 injection error on call."""
+
+    async def generate_narrative(self, prompt, max_tokens=1024):
+        from packages.narrative.live_client import NarrativeInjectionDetectedError
+
+        raise NarrativeInjectionDetectedError(
+            "Model output contained injection trigger 'ignore previous'; refusing to return"
+        )
+
+
+class _StructuralRaisingClient(MockNarrativeClient):
+    """Test stub: Mock client that raises Layer-4 structural error on call."""
+
+    async def generate_narrative(self, prompt, max_tokens=1024):
+        from packages.narrative.live_client import NarrativeStructuralViolationError
+
+        raise NarrativeStructuralViolationError(
+            "Model output violates plain-prose constraint: contains URL"
+        )
+
+
+@pytest.mark.asyncio
+async def test_narrative_route_returns_422_on_injection_detected(app, client, caplog):
+    """Layer-3 trigger -> 422 (not 502) with stable incident_id; WARN logged."""
+    pairs = await _make_chain(2)
+    app.dependency_overrides[get_session] = _override_session_with_pairs(pairs)
+
+    async def _override_injection_client():
+        return _InjectionRaisingClient()
+
+    app.dependency_overrides[get_narrative_client] = _override_injection_client
+
+    import logging as _logging
+
+    with caplog.at_level(_logging.WARNING, logger="apps.api.routes.narratives"):
+        response = await client.post(
+            "/v1/narratives"
+            f"?tenant_id={_TENANT_ID}"
+            "&scope_start=2026-05-13T00:00:00%2B00:00"
+            "&scope_end=2026-05-13T23:59:59%2B00:00"
+        )
+
+    assert response.status_code == 422
+    body = response.json()
+    detail = body["detail"]
+    # Response shape: error code + non-revealing reason + correlation id, NOT the
+    # specific injection trigger or the prompt text.
+    assert detail["error"] == "narrative_input_refused"
+    assert "adversarial" in detail["reason"]
+    assert UUID(detail["incident_id"])  # must be a valid UUID
+    assert "ignore previous" not in str(body)  # the offending substring must NOT leak
+
+    # WARN log captured with the correlation id and pack root hash.
+    msgs = [r.message for r in caplog.records]
+    assert "forensa.narrative.injection_detected" in msgs
+    matching = [r for r in caplog.records if r.message == "forensa.narrative.injection_detected"]
+    assert matching, "WARN log not captured"
+    rec = matching[0]
+    assert rec.incident_id == detail["incident_id"]
+    assert rec.tenant_id == str(_TENANT_ID)
+    assert rec.defence_layer == 3
+    assert isinstance(rec.prompt_length, int) and rec.prompt_length > 0
+    assert rec.pack_root_hash and len(rec.pack_root_hash) == 64
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_narrative_route_returns_422_on_structural_violation(app, client, caplog):
+    """Layer-4 trigger -> 422 (not 502) with stable incident_id; WARN logged."""
+    pairs = await _make_chain(2)
+    app.dependency_overrides[get_session] = _override_session_with_pairs(pairs)
+
+    async def _override_structural_client():
+        return _StructuralRaisingClient()
+
+    app.dependency_overrides[get_narrative_client] = _override_structural_client
+
+    import logging as _logging
+
+    with caplog.at_level(_logging.WARNING, logger="apps.api.routes.narratives"):
+        response = await client.post(
+            "/v1/narratives"
+            f"?tenant_id={_TENANT_ID}"
+            "&scope_start=2026-05-13T00:00:00%2B00:00"
+            "&scope_end=2026-05-13T23:59:59%2B00:00"
+        )
+
+    assert response.status_code == 422
+    body = response.json()
+    detail = body["detail"]
+    assert detail["error"] == "narrative_output_refused"
+    assert "plain_prose" in detail["reason"]
+    assert UUID(detail["incident_id"])
+
+    matching = [r for r in caplog.records if r.message == "forensa.narrative.structural_violation"]
+    assert matching, "WARN log not captured"
+    rec = matching[0]
+    assert rec.defence_layer == 4
+    assert rec.incident_id == detail["incident_id"]
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_narrative_route_incident_ids_are_unique_per_request(app, client):
+    """Two refusals -> two distinct incident_ids (correlation must be per-request)."""
+    pairs = await _make_chain(2)
+    app.dependency_overrides[get_session] = _override_session_with_pairs(pairs)
+
+    async def _override_injection_client():
+        return _InjectionRaisingClient()
+
+    app.dependency_overrides[get_narrative_client] = _override_injection_client
+
+    r1 = await client.post(
+        "/v1/narratives"
+        f"?tenant_id={_TENANT_ID}"
+        "&scope_start=2026-05-13T00:00:00%2B00:00"
+        "&scope_end=2026-05-13T23:59:59%2B00:00"
+    )
+    r2 = await client.post(
+        "/v1/narratives"
+        f"?tenant_id={_TENANT_ID}"
+        "&scope_start=2026-05-13T00:00:00%2B00:00"
+        "&scope_end=2026-05-13T23:59:59%2B00:00"
+    )
+    assert r1.status_code == r2.status_code == 422
+    id1 = r1.json()["detail"]["incident_id"]
+    id2 = r2.json()["detail"]["incident_id"]
+    assert id1 != id2
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_narrative_route_still_returns_502_on_generic_client_error(app, client):
+    """Generic NarrativeClientError (NOT injection/structural) still returns 502.
+
+    The 422/502 split is meaningful: 422 = adversarial input refused by defence,
+    502 = upstream LLM is sick. This guards against future code conflating them.
+    """
+    pairs = await _make_chain(2)
+    app.dependency_overrides[get_session] = _override_session_with_pairs(pairs)
+    app.dependency_overrides[get_narrative_client] = _override_failing_client
+    response = await client.post(
+        "/v1/narratives"
+        f"?tenant_id={_TENANT_ID}"
+        "&scope_start=2026-05-13T00:00:00%2B00:00"
+        "&scope_end=2026-05-13T23:59:59%2B00:00"
+    )
+    assert response.status_code == 502
+    assert "narrative client failed" in response.json()["detail"]
+    app.dependency_overrides.clear()

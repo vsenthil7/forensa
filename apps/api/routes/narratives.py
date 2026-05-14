@@ -4,14 +4,28 @@ Reuses the evidence-pack assembly path (list_receipts_for_tenant + get_receipt_b
 -, then runs build_prompt + NarrativeClient.generate_narrative.
 
 The client is injected via FastAPI Depends so tests can swap in MockNarrativeClient
-without touching Gemini. The production wiring (live Gemini Pro) lands in Phase 8
-demo polish.
+without touching Gemini. Production wiring (live Gemini Pro) landed CP9.1+CP9.4.
+
+CP9.6: injection-detected and structural-violation results from the 4-layer
+prompt-injection defence (packages/narrative/live_client.py) are now
+recognised separately at the route layer:
+
+- A 502 ``Bad Gateway`` for genuine upstream LLM failures (timeout, SDK exception, ...)
+- A 422 ``Unprocessable Entity`` for defence-triggered refusals (the request
+  itself contained adversarial content; this is a client-input problem not a
+  server problem)
+
+Every defence-triggered refusal is logged at WARN with a stable correlation id
+so SRE / Compliance can investigate without re-issuing the attack payload.
+The correlation id is returned to the caller; the actual injection pattern
+and the offending prompt text are NOT - both would help the attacker iterate.
 """
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -22,8 +36,14 @@ from apps.api.routes.receipts import get_session
 from packages.export.builder import build_evidence_pack
 from packages.ledger.repositories import get_receipt_by_id, list_receipts_for_tenant
 from packages.narrative.client import NarrativeClient, NarrativeClientError
+from packages.narrative.live_client import (
+    NarrativeInjectionDetectedError,
+    NarrativeStructuralViolationError,
+)
 from packages.narrative.prompt import build_prompt, prompt_hash
 from packages.schema.receipt import Receipt
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1", tags=["narratives"])
 
@@ -62,8 +82,16 @@ class NarrativeResponse(BaseModel):
     summary="Generate a regulator-ready narrative for an evidence-pack window",
     responses={
         413: {"description": "Window contains more than 1000 receipts"},
-        422: {"description": "Invalid scope window"},
-        502: {"description": "Narrative client failed"},
+        422: {
+            "description": (
+                "Invalid scope window OR injection / structural defence triggered"
+                " (4-layer defence on the narrative client refused the input)."
+                " Response body includes a stable ``incident_id`` for SRE / Compliance"
+                " lookup; the specific defence layer and the offending text are NOT"
+                " disclosed."
+            )
+        },
+        502: {"description": "Narrative client failed (upstream LLM timeout / SDK error)"},
     },
 )
 async def generate_narrative(
@@ -116,6 +144,46 @@ async def generate_narrative(
 
     try:
         result = await client.generate_narrative(prompt, max_tokens=max_tokens)
+    except NarrativeInjectionDetectedError as exc:
+        incident_id = uuid4()
+        logger.warning(
+            "forensa.narrative.injection_detected",
+            extra={
+                "incident_id": str(incident_id),
+                "tenant_id": str(tenant_id),
+                "pack_root_hash": pack.root_hash,
+                "prompt_length": len(prompt),
+                "defence_layer": 3,
+            },
+        )
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "narrative_input_refused",
+                "reason": "input_or_output_contained_adversarial_pattern",
+                "incident_id": str(incident_id),
+            },
+        ) from exc
+    except NarrativeStructuralViolationError as exc:
+        incident_id = uuid4()
+        logger.warning(
+            "forensa.narrative.structural_violation",
+            extra={
+                "incident_id": str(incident_id),
+                "tenant_id": str(tenant_id),
+                "pack_root_hash": pack.root_hash,
+                "prompt_length": len(prompt),
+                "defence_layer": 4,
+            },
+        )
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "narrative_output_refused",
+                "reason": "model_output_violated_plain_prose_constraint",
+                "incident_id": str(incident_id),
+            },
+        ) from exc
     except NarrativeClientError as e:
         raise HTTPException(status_code=502, detail=f"narrative client failed: {e}") from e
 

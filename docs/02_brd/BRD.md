@@ -1,7 +1,8 @@
 # Forensa - Business Requirements Document (BRD)
 
-**Doc:** 02 of 22 | **Date:** 12 May 2026 | **Status:** v1, frozen | **Source:** Section A.2 of three-author master doc
+**Doc:** 02 of 22 | **Date:** 12 May 2026 (v1) / 14 May 2026 (v1.2) | **Status:** v1.2, status-tracked | **Source:** Section A.2 of three-author master doc
 **Status column added:** 14 May 2026 09:58 per EnterpriseGradeReview_Claude review fix #10 (close doc-claim-vs-code-reality gap)
+**Last status sweep:** 14 May 2026 22:02 after CP9.16-PG-up + CP9.17 Idempotency-Key
 
 ## Status legend
 
@@ -37,9 +38,9 @@
 
 ### BR-01 - Tamper-evident event recording
 **Status:** `IMPLEMENTED+TESTED`
-Every agent action (prompt, model response, tool call, policy verdict, human approval, business outcome) is captured as a structured event and appended to a cryptographically-chained ledger (Merkle-style hash chain; RFC 3161 TSA anchoring deferred — see BR-06).
-**Architecture component:** packages/ingest, packages/ledger
-**Test coverage:** unit + property-based on chain integrity (68 crypto tests + 53 ledger tests passing at 100% coverage)
+Every agent action (prompt, model response, tool call, policy verdict, human approval, business outcome) is captured as a structured event and appended to a cryptographically-chained ledger (Merkle-style hash chain; RFC 3161 TSA anchoring deferred - see BR-06).
+**Architecture component:** packages/ingest, packages/ledger; CP9.16 added DB-level append-only triggers on `policy_bundle_approvals` (PL/pgSQL `forensa_block_approval_mutation` raises on UPDATE/DELETE) verified against real PostgreSQL 16.13 in `tests/integration/test_pg_append_only_triggers.py` (6 tests).
+**Test coverage:** unit + property-based on chain integrity (68 crypto tests + 53 ledger tests passing at 100% coverage). CP9.16 added 14 PG-integration tests covering migration round-trip, partial UNIQUE index race-safety, and trigger-level append-only enforcement that SQLite cannot model. CP9.17 added 54 tests on retry-safe ingest (idempotency dedup) - see new NFR row "Retry-safe ingest" below.
 **Gap vs spec:** None on tamper-evidence. RFC 3161 anchoring tracked under BR-06.
 
 ### BR-02 - Multi-party identity binding
@@ -131,6 +132,7 @@ Inventory export endpoint is not in code. Tracked for Phase 13 stretch.
 | Explainability and exportability | `IMPLEMENTED+TESTED` | JSON-LD pack + Mock narrative today; Live narrative after CP9.1 |
 | Scalable storage and search (OpenSearch backend) | `DEFERRED` | Phase 12 |
 | Retention and deletion controls aligned to enterprise policy (5-10 year default) | `DEFERRED` | GDPR erasure × append-only tension addressed in Phase 13 CP13.2 |
+| **Retry-safe ingest (idempotency dedup)** | `IMPLEMENTED+TESTED` | CP9.17 lands Stripe-style `Idempotency-Key` header on POST /v1/events. Same key + same body within TTL returns the original 201 response without re-running the ingest pipeline (no double-counting in the evidence ledger under retry storms). Same key + different body returns 409 Conflict. In-memory store wired by default with `InMemoryIdempotencyStore` (process-local, 24h TTL, asyncio.Lock-guarded). `PostgresIdempotencyStore` fully implemented + unit-tested but not wired into the default route yet (NEW-P9.17.3 pending - production cutover work). New alembic migration 0005 creates `idempotency_records` table with composite (tenant_id, key) PK + four CHECK constraints. 54 tests at 100% coverage: 35 unit on the store, 19 on the route. Closes the Enterprise-Grade Review section 3.2 finding ("No idempotency key... retries will produce duplicate events with different UUIDs"). |
 
 ## Out of scope for v1
 
@@ -150,3 +152,5 @@ Each BR maps to architecture component + test suite. See `docs/17_traceability_m
 |---|---|
 | 12 May 2026 | v1 BRD frozen with 13 BRs |
 | 14 May 2026 09:58 | Status column added per EnterpriseGradeReview_Claude review fix #10. Headline: 4 IMPLEMENTED+TESTED / 4 PARTIAL / 2 STUB / 3 DEFERRED. Status of BR-10 and BR-11 will move to IMPLEMENTED after Phase 9 CP9.1 lands in this same session. |
+| 14 May 2026 20:07 | CP9.16-PG-up landed (HEAD `099afdb`). BR-01 narrative updated to reference DB-level append-only triggers verified on real PostgreSQL 16.13 via 14 new tests in `tests/integration/`. No BR status code change (BR-01 was already IMPLEMENTED+TESTED). Closes 3 honest gaps from CP9.15.1 named in the Enterprise-Grade Review: migration round-trip on real PG, partial UNIQUE concurrency test, trigger-level UPDATE/DELETE rejection. |
+| 14 May 2026 22:02 | CP9.17 landed (HEAD `689a26d`). New NFR row "Retry-safe ingest (idempotency dedup)" added at IMPLEMENTED+TESTED. Closes Enterprise-Grade Review section 3.2 finding on Idempotency-Key. 54 new tests at 100% coverage; no BR status code change (this is an enterprise-grade hardening item rather than a BR). NEW-P9.17.1 (cleanup cron), NEW-P9.17.2 (other mutating routes), NEW-P9.17.3 (production-wiring PostgresIdempotencyStore) tracked in commit body of `689a26d` for future CPs. |

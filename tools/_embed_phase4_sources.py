@@ -167,6 +167,91 @@ Coverage by source module after Phase 3:
             ("CP3.3", "Test script (test_replay.py)", "tests/packages/test_replay.py", "python"),
         ],
     ),
+    5: (
+        """\
+## Test-level split per CP
+
+| CP | Functional | Negative | Parametric | Property | Total | Notes |
+|---|---:|---:|---:|---:|---:|---|
+| CP5.1 HealthBadge 4-state | 4 | 3 | 0 | 0 | 7 new | 401/403/5xx/network handling |
+| CP5.2 list endpoint | 3 | 5 | 0 | 0 | 8 | TestClient + dependency_overrides |
+| CP5.3 detail endpoint | 2 | 2 | 0 | 0 | 4 | integrity_ok recompute live |
+| CP5.4 console components | 21 | 0 | 0 | 0 | 21 | 3 components 100pct branch via /* v8 ignore next */ on cancellation guards |
+| **Phase 5 total** | **30** | **10** | **0** | **0** | **+40** | pytest 398 -> 410; vitest 14 -> 36 |
+
+Coverage by source module after Phase 5:
+
+| Module | Cov line | Cov branch | Test file |
+|---|---:|---:|---|
+| packages/ledger/repositories.py | 100pct | 100pct | tests/api/test_receipts_route.py + tests/packages/test_repositories.py |
+| apps/api/routes/receipts.py | 100pct | 100pct | tests/api/test_receipts_route.py |
+| apps/console/src/components/HealthBadge.tsx | 100pct | 100pct | apps/console/src/components/__tests__/HealthBadge.test.tsx |
+| apps/console/src/components/ReceiptList.tsx | 100pct | 100pct | apps/console/src/components/__tests__/ReceiptList.test.tsx |
+| apps/console/src/components/ReceiptDetail.tsx | 100pct | 100pct | apps/console/src/components/__tests__/ReceiptDetail.test.tsx |
+""",
+        [
+            (
+                "CP5.1",
+                "Production code (HealthBadge.tsx)",
+                "apps/console/src/components/HealthBadge.tsx",
+                "tsx",
+            ),
+            (
+                "CP5.1",
+                "Test script (HealthBadge.test.tsx)",
+                "apps/console/src/components/__tests__/HealthBadge.test.tsx",
+                "tsx",
+            ),
+            (
+                "CP5.2",
+                "Production code (receipts.py routes)",
+                "apps/api/routes/receipts.py",
+                "python",
+            ),
+            (
+                "CP5.2",
+                "Production code (repositories.py - list + detail repo functions)",
+                "packages/ledger/repositories.py",
+                "python",
+            ),
+            (
+                "CP5.2 + 5.3",
+                "Test script (test_receipts_route.py)",
+                "tests/api/test_receipts_route.py",
+                "python",
+            ),
+            (
+                "CP5.4",
+                "Production code (ReceiptList.tsx)",
+                "apps/console/src/components/ReceiptList.tsx",
+                "tsx",
+            ),
+            (
+                "CP5.4",
+                "Production code (ReceiptDetail.tsx)",
+                "apps/console/src/components/ReceiptDetail.tsx",
+                "tsx",
+            ),
+            (
+                "CP5.4",
+                "Test script (ReceiptList.test.tsx)",
+                "apps/console/src/components/__tests__/ReceiptList.test.tsx",
+                "tsx",
+            ),
+            (
+                "CP5.4",
+                "Test script (ReceiptDetail.test.tsx)",
+                "apps/console/src/components/__tests__/ReceiptDetail.test.tsx",
+                "tsx",
+            ),
+            (
+                "CP5.4",
+                "Production code (home page page.tsx)",
+                "apps/console/src/app/page.tsx",
+                "tsx",
+            ),
+        ],
+    ),
 }
 
 for n, (split_md, sections) in PHASES.items():

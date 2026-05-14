@@ -196,10 +196,22 @@ class LiveNarrativeClient(NarrativeClient):
         model = genai.GenerativeModel(  # type: ignore[attr-defined,unused-ignore]
             model_name=self._model_id, system_instruction=system_instruction
         )
+        # Output budget needs headroom for "thinking" models (Gemini 2.5 Pro,
+        # Gemini 3.x). These models spend internal reasoning tokens before the
+        # visible response. The cleaner fix is `thinking_config={'thinking_budget': 0}`
+        # but that param only exists in the new `google.genai` SDK; the
+        # deprecated `google.generativeai` we're on today doesn't know it.
+        # Tracked as NEW-P9.X.genai-sdk-migration in the backlog. Until then,
+        # callers should pass max_tokens generously (>= 1024) so the visible
+        # output gets enough budget after reasoning is consumed.
+        generation_config: dict[str, Any] = {
+            "max_output_tokens": max_tokens,
+            "temperature": 0.2,
+        }
         response = await asyncio.wait_for(
             model.generate_content_async(
                 user_message,
-                generation_config={"max_output_tokens": max_tokens, "temperature": 0.2},
+                generation_config=generation_config,  # type: ignore[arg-type,unused-ignore]
             ),
             timeout=self._timeout_seconds,
         )

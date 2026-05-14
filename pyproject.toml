@@ -60,7 +60,16 @@ filterwarnings = ["error", "ignore::DeprecationWarning:pytest_asyncio"]
 [tool.coverage.run]
 branch = true
 source = ["apps", "packages"]
-omit = ["*/__init__.py", "*/tests/*", "alembic/*"]
+omit = [
+    "*/__init__.py",
+    "*/tests/*",
+    "alembic/*",
+    # scripts/test_api_keys.py is a manual integration smoke that requires a
+    # real FORENSA_GEMINI_API_KEY + network. Not unit-testable in CI without
+    # the key, and not meaningful to unit-test with mocks (it exists to verify
+    # the real key works against the real SDK).
+    "scripts/test_api_keys.py",
+]
 
 [tool.coverage.report]
 exclude_lines = [

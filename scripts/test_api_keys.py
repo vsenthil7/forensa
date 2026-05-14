@@ -88,7 +88,7 @@ async def test_live_narrative_client() -> bool:
             " Instruction: summarise the evidence pack in one sentence of"
             " plain prose. No URLs. No code."
         )
-        result = await client.generate_narrative(prompt, max_tokens=64)
+        result = await client.generate_narrative(prompt, max_tokens=2048)
         ok = bool(result.narrative_text) and bool(result.content_hash)
         if ok:
             print(

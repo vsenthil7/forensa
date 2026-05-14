@@ -274,3 +274,78 @@ def test_invalid_parent_span_id_rejected():
     span = _good_span(parent_span_id="tooshort")
     with pytest.raises(NormaliserError, match="16 lowercase"):
         normalise_otel_span(span, tenant_id=TENANT, agent_id=AGENT)
+
+
+# ========== CP9.13 / NEW-P9.8.19 OTel SpanKind=INTERNAL rejection ==========
+
+
+def test_internal_span_kind_string_rejected():
+    """OTel SpanKind="INTERNAL" with no forensa override -> NormaliserError."""
+    span = _good_span(kind="INTERNAL")
+    with pytest.raises(NormaliserError, match="INTERNAL"):
+        normalise_otel_span(span, tenant_id=TENANT, agent_id=AGENT)
+
+
+def test_internal_span_kind_lowercase_rejected():
+    """Case-insensitive match: 'internal' -> rejected just like 'INTERNAL'."""
+    span = _good_span(kind="internal")
+    with pytest.raises(NormaliserError, match="INTERNAL"):
+        normalise_otel_span(span, tenant_id=TENANT, agent_id=AGENT)
+
+
+def test_internal_span_kind_protobuf_string_rejected():
+    """OTel SpanKind="SPAN_KIND_INTERNAL" (protobuf-style) -> rejected."""
+    span = _good_span(kind="SPAN_KIND_INTERNAL")
+    with pytest.raises(NormaliserError, match="INTERNAL"):
+        normalise_otel_span(span, tenant_id=TENANT, agent_id=AGENT)
+
+
+def test_internal_span_kind_integer_rejected():
+    """OTel SpanKind=1 (integer enum value for INTERNAL) -> rejected."""
+    span = _good_span(kind=1)
+    with pytest.raises(NormaliserError, match="INTERNAL"):
+        normalise_otel_span(span, tenant_id=TENANT, agent_id=AGENT)
+
+
+def test_internal_span_kind_accepted_with_forensa_override():
+    """INTERNAL + explicit forensa.event.kind -> accepted (escape hatch).
+
+    Some agent frameworks legitimately use INTERNAL spans for actions Forensa
+    cares about; the explicit override is the contract for those cases."""
+    span = _good_span(
+        kind="INTERNAL",
+        attributes={
+            "forensa.event.kind": "auth_decision",
+        },
+    )
+    ev = normalise_otel_span(span, tenant_id=TENANT, agent_id=AGENT)
+    assert ev.kind == EventKind.AUTH_DECISION.value
+
+
+def test_non_internal_span_kinds_pass_through():
+    """PRODUCER / CONSUMER / CLIENT / SERVER are all eligible. Test a few
+    representative values to confirm the rejection is INTERNAL-only."""
+    for kind_value in [
+        "PRODUCER",
+        "CONSUMER",
+        "CLIENT",
+        "SERVER",
+        "SPAN_KIND_PRODUCER",
+        2,
+        3,
+        4,
+        5,
+    ]:
+        span = _good_span(kind=kind_value)
+        ev = normalise_otel_span(span, tenant_id=TENANT, agent_id=AGENT)
+        # Falls back to the gen_ai.operation.name resolution ('chat' -> LLM_INVOCATION)
+        assert ev.kind == EventKind.LLM_INVOCATION.value, f"kind={kind_value} should be accepted"
+
+
+def test_missing_kind_field_still_accepted():
+    """Spans without a ``kind`` field at all (legacy / minimal exporters) still
+    get accepted - the rejection only fires when kind is PRESENT and INTERNAL."""
+    span = _good_span()
+    assert "kind" not in span
+    ev = normalise_otel_span(span, tenant_id=TENANT, agent_id=AGENT)
+    assert ev.kind == EventKind.LLM_INVOCATION.value

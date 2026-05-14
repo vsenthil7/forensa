@@ -32,6 +32,33 @@ class NormaliserError(ValueError):
     """Raised when an OTel span cannot be normalised."""
 
 
+# CP9.13 / NEW-P9.8.19: OTel SpanKind values that represent internal plumbing
+# (not an agent-tool or agent-LLM boundary crossing). Forensa cares about
+# PRODUCER / CONSUMER spans (cross-process boundaries) plus CLIENT / SERVER
+# (request/response boundaries). INTERNAL spans are typically library-internal
+# instrumentation that should not become evidence-grade Receipts.
+_INTERNAL_SPAN_KIND_VALUES: frozenset[str] = frozenset(
+    {
+        "INTERNAL",
+        "SPAN_KIND_INTERNAL",
+        # Integer 1 from the protobuf enum (str() form for safety).
+        "1",
+    }
+)
+
+
+def _is_internal_span_kind(raw: Any) -> bool:
+    """Return True iff the OTel span ``kind`` field signals INTERNAL.
+
+    Accepts the three forms in the wild: string ``"INTERNAL"``,
+    protobuf-style ``"SPAN_KIND_INTERNAL"``, and integer enum value ``1``.
+    Anything else (including None, missing, or other kinds) returns False.
+    """
+    if raw is None:
+        return False
+    return str(raw).upper() in _INTERNAL_SPAN_KIND_VALUES
+
+
 def _coerce_hex(value: str, expected_len: int, field_name: str) -> str:
     """Validate and lowercase a hex string of expected length."""
     if not isinstance(value, str):
@@ -118,6 +145,19 @@ def normalise_otel_span(
     attributes = span.get("attributes") or {}
     if not isinstance(attributes, Mapping):
         raise NormaliserError("attributes must be a mapping")
+
+    # CP9.13 / NEW-P9.8.19: reject INTERNAL spans unless they carry an
+    # explicit ``forensa.event.kind`` override. INTERNAL spans are typically
+    # library plumbing (instrumentation framework internals) and should not
+    # become Receipts. The explicit-override escape hatch preserves the case
+    # where a caller deliberately tags an INTERNAL span as a Forensa-meaningful
+    # event (rare but legitimate).
+    if _is_internal_span_kind(span.get("kind")) and "forensa.event.kind" not in attributes:
+        raise NormaliserError(
+            "OTel SpanKind=INTERNAL spans are not eligible for Forensa ingest"
+            " unless they carry an explicit forensa.event.kind override"
+            " (NEW-P9.8.19)"
+        )
 
     kind = _resolve_kind(attributes)
 

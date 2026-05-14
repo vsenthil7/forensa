@@ -190,10 +190,10 @@ class LiveNarrativeClient(NarrativeClient):
         CP9.5 90-second demo MP4. All unit tests inject a stub via
         ``generate_call=`` in the constructor.
         """
-        import google.generativeai as genai  # type: ignore[import-not-found]
+        import google.generativeai as genai  # type: ignore[import-not-found,unused-ignore]
 
-        genai.configure(api_key=self._api_key)
-        model = genai.GenerativeModel(
+        genai.configure(api_key=self._api_key)  # type: ignore[attr-defined,unused-ignore]
+        model = genai.GenerativeModel(  # type: ignore[attr-defined,unused-ignore]
             model_name=self._model_id, system_instruction=system_instruction
         )
         response = await asyncio.wait_for(

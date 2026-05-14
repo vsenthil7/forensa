@@ -36,6 +36,7 @@ async def write_event_with_receipt(
     event: Event,
     snapshot: PolicySnapshot,
     receipt: Receipt,
+    snapshot_id: UUID | None = None,
 ) -> UUID:
     """Atomically persist (PolicySnapshot, Event, Receipt) and return the snapshot id.
 
@@ -46,8 +47,15 @@ async def write_event_with_receipt(
     The receipt's tenant_id must equal event.tenant_id. Both invariants are
     asserted here to fail fast before any rows hit the DB.
 
-    Returns the freshly-created policy_snapshot id so the caller can pass it
-    to recompute_receipt_hash if it wants to verify before commit.
+    ``snapshot_id`` is the freshly-allocated UUID for the new
+    ``policy_snapshots`` row. Callers that need to bind the snapshot id into
+    the Receipt's receipt_hash BEFORE persistence (the ingest service does)
+    must allocate it themselves with ``uuid4()`` and pass it through; the
+    default ``None`` triggers internal allocation for callers that don't
+    care (legacy tests, scripts). [CP9.11]
+
+    Returns the policy_snapshot id used so the caller can pass it to
+    recompute_receipt_hash if it wants to verify before commit.
     """
     if receipt.policy_bundle_id != snapshot.policy_bundle_id:
         raise ValueError(
@@ -64,7 +72,8 @@ async def write_event_with_receipt(
             "receipt.event_id does not match event.id; " "refusing to persist a misaligned triple"
         )
 
-    snapshot_id = uuid4()
+    if snapshot_id is None:
+        snapshot_id = uuid4()
 
     snapshot_row = PolicySnapshotRow(
         id=snapshot_id,

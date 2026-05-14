@@ -1,47 +1,215 @@
-"""POST /v1/events — validate-and-acknowledge ingest endpoint.
+"""POST /v1/events — full-stack ingest endpoint (CP9.11).
 
-Phase 1 (this unit): validates incoming events against the Event Pydantic
-schema and returns 202 Accepted with the event id. No DB persistence yet —
-that lands in Unit 8 with the normaliser + ingest pipeline.
+CP9.11 lands real persistence. Previously this endpoint validated the Event
+schema and returned 202 Accepted with the event id but did NOT persist (the
+review's biggest finding on this module: "the endpoint is a no-op
+acknowledgement today").
+
+Now the endpoint:
+
+- Accepts the validated ``Event``.
+- Resolves the active policy bundle for the tenant (via ``PolicyBundleProvider``).
+- Evaluates the action against the enforcement gateway (via
+  ``PolicyEnforcementClient``).
+- Builds and signs a Receipt over the chain head + the new event.
+- Atomically persists (snapshot, event, receipt) via
+  ``write_event_with_receipt``.
+- Returns 201 Created with the ``event_id``, ``receipt_id``,
+  ``policy_snapshot_id``, ``receipt_hash``, and ``integrity_ok`` boolean.
+
+Routing logic stays thin; the orchestration lives in
+``apps.api.ingest_service.ingest_event``. The route's job is to:
+
+- Hold the request body schema (``EventCreatedResponse``).
+- Wire FastAPI ``Depends(...)`` for the four service inputs (session,
+  enforcement client, bundle provider, signing key provider).
+- Map ``IngestServiceError`` to HTTP 422 with a stable structured body so
+  downstream callers can retry / inspect.
+
+The four providers are module-level singletons by default so the same
+in-memory caches (signing keys, bundles) are reused across requests in one
+process. Tests override each via ``app.dependency_overrides`` for full
+isolation.
+
+Future-tracked items:
+- Per-tenant auth & tenant-id-from-token (top-20 #1, CP10.1).
+- Idempotency-Key header (NEW-P9.8.2).
+- Payload size limit (NEW-P9.8.3).
+- OTel traceparent propagation (CP12.1).
+- Async-queue back-pressure (top-20 #8, CP12.4).
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from uuid import UUID
 
-from fastapi import APIRouter, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.api.ingest_service import (
+    DefaultBundleProvider,
+    IngestServiceError,
+    InMemorySigningKeyProvider,
+    PolicyBundleProvider,
+    TenantSigningKeyProvider,
+    ingest_event,
+)
+from apps.api.routes.receipts import get_session
+from packages.policy.enforcement import PolicyEnforcementClient
+from packages.policy.lobstertrap import MockLobsterTrapClient
 from packages.schema.event import Event
 
 router = APIRouter(prefix="/v1", tags=["events"])
 
 
-class EventAcceptedResponse(BaseModel):
-    """Returned by POST /v1/events on successful validation."""
+# ---------------------------------------------------------------------------
+# Module-level provider singletons (default impls for hackathon demo).
+# Tests override via app.dependency_overrides.
+# ---------------------------------------------------------------------------
+
+_DEFAULT_BUNDLE_PROVIDER = DefaultBundleProvider()
+_DEFAULT_SIGNING_KEY_PROVIDER = InMemorySigningKeyProvider()
+
+
+async def get_bundle_provider() -> PolicyBundleProvider:
+    """Default policy bundle provider. Override in tests."""
+    return _DEFAULT_BUNDLE_PROVIDER
+
+
+async def get_signing_key_provider() -> TenantSigningKeyProvider:
+    """Default tenant signing key provider. Override in tests."""
+    return _DEFAULT_SIGNING_KEY_PROVIDER
+
+
+async def get_enforcement_client() -> PolicyEnforcementClient:
+    """Default policy enforcement client.
+
+    Returns a fresh ``MockLobsterTrapClient`` bound to the same bundle the
+    default ``PolicyBundleProvider`` would return for a tenant. In a real
+    deployment this is the live Veea HTTP client (NEW-P9.8.22).
+
+    NOTE: this provider needs to know which bundle is active to issue
+    verdicts that bind to it. For the demo we resolve through the
+    default bundle provider directly. Tests override this entirely.
+    """
+    # Lazy-import the bundle provider's cache; uses bundle for the FIRST
+    # tenant requested. In production each enforcement client call is its
+    # own HTTP round-trip and the bundle is encoded in the trap config.
+    # Returning a deterministic mock here is acceptable because the ingest
+    # service then validates verdict.policy_bundle_id == active_bundle.id
+    # and refuses on drift.
+    return _DEFAULT_ENFORCEMENT_CLIENT
+
+
+# We can't construct a MockLobsterTrapClient at module load because it needs
+# a bundle_id. Construct it lazily on first use, bound to the first tenant's
+# default bundle. For multi-tenant production this gets replaced entirely.
+class _LazyDefaultEnforcement(PolicyEnforcementClient):
+    """Bridges to the default bundle provider on first call.
+
+    The instance is module-level and shared across requests. On each
+    ``evaluate`` call it resolves the tenant's active bundle and lazily
+    builds a per-tenant ``MockLobsterTrapClient`` cached under the bundle id.
+    """
+
+    def __init__(self) -> None:
+        self._per_bundle: dict[UUID, MockLobsterTrapClient] = {}
+
+    async def evaluate(self, tenant_id: UUID, action: dict[str, object]) -> object:  # type: ignore[override]
+        bundle = await _DEFAULT_BUNDLE_PROVIDER.get_active_bundle(tenant_id)
+        client = self._per_bundle.get(bundle.id)
+        if client is None:
+            client = MockLobsterTrapClient(
+                policy_bundle_id=bundle.id,
+                policy_bundle_version=bundle.version,
+                content=bundle.content,
+            )
+            self._per_bundle[bundle.id] = client
+        return await client.evaluate(tenant_id, action)
+
+
+_DEFAULT_ENFORCEMENT_CLIENT: PolicyEnforcementClient = _LazyDefaultEnforcement()
+
+
+# ---------------------------------------------------------------------------
+# Wire form
+# ---------------------------------------------------------------------------
+
+
+class EventCreatedResponse(BaseModel):
+    """Returned by POST /v1/events on successful persistence (CP9.11)."""
 
     model_config = ConfigDict(extra="forbid")
 
-    event_id: str = Field(..., description="UUID of the accepted event")
-    status: str = Field(default="accepted")
-    accepted_at: datetime = Field(..., description="Server-side acknowledgement timestamp")
+    event_id: str = Field(..., description="UUID of the persisted event")
+    receipt_id: str = Field(..., description="UUID of the issued Receipt")
+    policy_snapshot_id: str = Field(
+        ..., description="UUID of the policy snapshot bound into the Receipt"
+    )
+    receipt_hash: str = Field(..., description="SHA-256 hex of the Receipt's canonical bind fields")
+    integrity_ok: bool = Field(
+        ...,
+        description=(
+            "True iff a live recompute of the receipt_hash from the persisted"
+            " bind fields equals the stored receipt_hash."
+        ),
+    )
+    status: str = Field(default="created")
+    persisted_at: datetime = Field(..., description="Server-side acknowledgement timestamp")
+
+
+# ---------------------------------------------------------------------------
+# Route
+# ---------------------------------------------------------------------------
 
 
 @router.post(
     "/events",
-    status_code=status.HTTP_202_ACCEPTED,
-    response_model=EventAcceptedResponse,
-    summary="Submit a single agent event for evidence-grade ingestion",
+    status_code=status.HTTP_201_CREATED,
+    response_model=EventCreatedResponse,
+    summary="Submit a single agent event for evidence-grade ingestion (full persistence)",
+    responses={
+        201: {"description": "Event accepted, Receipt issued, chain extended"},
+        422: {"description": "Event failed schema validation OR policy enforcement failed"},
+    },
 )
-async def submit_event(event: Event, response: Response) -> EventAcceptedResponse:
-    """Accept a validated Event and return 202 with the event id.
+async def submit_event(
+    event: Event,
+    response: Response,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    enforcement_client: PolicyEnforcementClient = Depends(get_enforcement_client),  # noqa: B008
+    bundle_provider: PolicyBundleProvider = Depends(get_bundle_provider),  # noqa: B008
+    signing_key_provider: TenantSigningKeyProvider = Depends(  # noqa: B008
+        get_signing_key_provider
+    ),
+) -> EventCreatedResponse:
+    """Accept an Event, run ingest pipeline, return 201 with the issued Receipt."""
+    try:
+        result = await ingest_event(
+            session=session,
+            event=event,
+            enforcement_client=enforcement_client,
+            bundle_provider=bundle_provider,
+            signing_key_provider=signing_key_provider,
+        )
+    except IngestServiceError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "ingest_failed",
+                "reason": str(exc),
+            },
+        ) from exc
 
-    Returns 422 (FastAPI default) on schema validation failure. Persistence
-    happens asynchronously downstream; clients receive immediate ack with
-    the event id they can use to query receipts later.
-    """
-    response.headers["X-Forensa-Event-Id"] = str(event.id)
-    return EventAcceptedResponse(
-        event_id=str(event.id),
-        accepted_at=datetime.now(UTC),
+    response.headers["X-Forensa-Event-Id"] = str(result.event_id)
+    response.headers["X-Forensa-Receipt-Id"] = str(result.receipt_id)
+    return EventCreatedResponse(
+        event_id=str(result.event_id),
+        receipt_id=str(result.receipt_id),
+        policy_snapshot_id=str(result.policy_snapshot_id),
+        receipt_hash=result.receipt_hash,
+        integrity_ok=result.integrity_ok,
+        persisted_at=datetime.now(UTC),
     )

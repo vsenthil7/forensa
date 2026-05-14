@@ -68,9 +68,38 @@ class AgentRow(Base):
 
 
 class PolicyBundleRow(Base):
+    """Policy bundle ORM row.
+
+    The ``status`` column (added in alembic 0004 / CP9.15) tracks the bundle's
+    position in the approval workflow:
+
+    - ``proposed`` -> just authored, no review yet
+    - ``reviewed`` -> a reviewer (separate from author) signed off
+    - ``approved`` -> an approver (separate from reviewer) signed off
+    - ``active``   -> currently in use for ingest. At most ONE per tenant
+      (enforced by ``uq_policy_bundles_one_active_per_tenant`` partial unique
+      index).
+    - ``superseded`` -> formerly active, replaced by a newer bundle.
+
+    Forward-only transitions only - see ``packages.ledger.bundle_workflow``.
+    Bundles persisted before alembic 0004 default to ``proposed`` so they are
+    NOT silently treated as active (intentional: enterprise auditors should
+    not see a bundle marked active without an approval row to back it).
+    """
+
     __tablename__ = "policy_bundles"
     __table_args__ = (
         UniqueConstraint("tenant_id", "version", name="uq_policy_bundles_tenant_version"),
+        CheckConstraint(
+            "status IN ('proposed', 'reviewed', 'approved', 'active', 'superseded')",
+            name="ck_policy_bundles_status",
+        ),
+        Index(
+            "uq_policy_bundles_one_active_per_tenant",
+            "tenant_id",
+            unique=True,
+            postgresql_where="status = 'active'",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
@@ -84,6 +113,67 @@ class PolicyBundleRow(Base):
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     content: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # CP9.15 / NEW-P9.8.X.bundle-approval-workflow. Default proposed at write
+    # time; only the workflow module mutates this column.
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="proposed")
+
+
+class PolicyBundleApprovalRow(Base):
+    """One row per state transition in the bundle approval workflow.
+
+    Append-only audit log: every transition (``from_status`` -> ``to_status``)
+    produces a new row. Captures actor identity, role, reason, and timestamp.
+    A future CP wires each row to also emit a Forensa Receipt (eat your own
+    dogfood) - tracked as ``NEW-P9.15.bundle-approval-receipts``.
+
+    Actor identity is opaque today (``actor_id`` is just a UUID, ``actor_role``
+    is a free-form short string) because per-step auth lands in CP10.x. The
+    column exists now so future auth can fill it without a migration.
+    """
+
+    __tablename__ = "policy_bundle_approvals"
+    __table_args__ = (
+        CheckConstraint(
+            "from_status IN ('proposed', 'reviewed', 'approved', 'active', 'superseded')",
+            name="ck_policy_bundle_approvals_from_status",
+        ),
+        CheckConstraint(
+            "to_status IN ('proposed', 'reviewed', 'approved', 'active', 'superseded')",
+            name="ck_policy_bundle_approvals_to_status",
+        ),
+        CheckConstraint(
+            "actor_role IN ('author', 'reviewer', 'approver', 'activator', 'system')",
+            name="ck_policy_bundle_approvals_actor_role",
+        ),
+        Index(
+            "ix_policy_bundle_approvals_bundle_decided",
+            "bundle_id",
+            "decided_at",
+        ),
+        Index(
+            "ix_policy_bundle_approvals_tenant_decided",
+            "tenant_id",
+            "decided_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    bundle_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("policy_bundles.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("tenants.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    from_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    to_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    actor_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    actor_role: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str] = mapped_column(String(512), nullable=False)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class PolicySnapshotRow(Base):

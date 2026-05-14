@@ -277,10 +277,14 @@ async def test_postgres_bundle_provider_returns_existing_bundle():
 @pytest.mark.asyncio
 async def test_postgres_bundle_provider_persists_default_on_cache_miss():
     """Repository returns no row -> provider builds default bundle AND
-    persists it via write_bundle so subsequent calls return the same id."""
+    persists it via write_bundle so subsequent calls return the same id.
+
+    Uses ``auto_activate=False`` to exercise the persistence path in
+    isolation; the auto_activate workflow path is tested separately.
+    """
     tid = uuid4()
     factory, session = _bundle_session_factory(existing_bundle_row=None)
-    provider = PostgresBundleProvider(factory)
+    provider = PostgresBundleProvider(factory, auto_activate=False)
     bundle = await provider.get_active_bundle(tid)
 
     assert bundle.tenant_id == tid
@@ -297,10 +301,110 @@ async def test_postgres_bundle_provider_persists_default_on_cache_miss():
 async def test_postgres_bundle_provider_uses_custom_fallback_content():
     """Constructor accepts a ``fallback_content`` override which is used in
     place of ``DefaultBundleProvider._DEFAULT_CONTENT`` when building the
-    cache-miss bundle."""
+    cache-miss bundle.
+
+    Uses ``auto_activate=False`` for isolation.
+    """
     tid = uuid4()
     factory, _ = _bundle_session_factory(existing_bundle_row=None)
     custom = {"rules": [{"kind": "audit", "decision": "escalate"}], "default": "deny"}
-    provider = PostgresBundleProvider(factory, fallback_content=custom)
+    provider = PostgresBundleProvider(factory, fallback_content=custom, auto_activate=False)
     bundle = await provider.get_active_bundle(tid)
     assert bundle.content == custom
+
+
+@pytest.mark.asyncio
+async def test_postgres_bundle_provider_auto_activates_on_cache_miss():
+    """CP9.15: default ``auto_activate=True`` walks the bootstrap bundle
+    through propose -> review -> approve -> activate so subsequent
+    get_active_bundle calls find it via ``status='active'``.
+
+    Counts the workflow approval rows written (4 transitions = 4 rows) plus
+    the bundle row itself = 5 ``session.add`` calls total.
+
+    The mock has to feed ``scalar_one_or_none`` a specific sequence of
+    return values because each workflow step calls ``_load_bundle`` and
+    ``activate`` additionally queries for a prior-active bundle. The
+    sequence is set up explicitly so the test does not rely on
+    SQL-introspection heuristics.
+    """
+    from packages.ledger.models import PolicyBundleApprovalRow, PolicyBundleRow
+
+    tid = uuid4()
+    added_rows: list[object] = []
+
+    def _make_bundle_row_view():
+        """Return the most recently added PolicyBundleRow (mutable mock).
+
+        The workflow mutates ``bundle.status`` in place between transitions,
+        and the mock should reflect that mutation on subsequent reads.
+        Since session.add(row) keeps a reference to the same mock instance,
+        any in-place mutation by the workflow is visible here automatically.
+        """
+        for r in reversed(added_rows):
+            if isinstance(r, PolicyBundleRow):
+                return r
+        return None
+
+    # Sequence of scalar_one_or_none returns:
+    #   1. None  - get_active_bundle_for_tenant cache miss
+    #   2. bundle row - propose: _load_bundle
+    #   3. bundle row - review: _load_bundle
+    #   4. bundle row - approve: _load_bundle
+    #   5. bundle row - activate: _load_bundle (status now 'approved')
+    #   6. None  - activate: prior-active lookup (no prior active in this test)
+    #   7. bundle row - activate -> _transition -> _load_bundle
+    call_sequence = [
+        "miss",  # 1
+        "bundle",  # 2
+        "bundle",  # 3
+        "bundle",  # 4
+        "bundle",  # 5
+        "miss",  # 6
+        "bundle",  # 7
+    ]
+    call_index = {"n": 0}
+
+    def _scalar_returns():
+        idx = call_index["n"]
+        call_index["n"] += 1
+        if idx >= len(call_sequence):
+            return _make_bundle_row_view()
+        directive = call_sequence[idx]
+        return None if directive == "miss" else _make_bundle_row_view()
+
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none = MagicMock(side_effect=_scalar_returns)
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=result_mock)
+    session.add = MagicMock(side_effect=lambda row: added_rows.append(row))
+    session.flush = AsyncMock(return_value=None)
+
+    def factory() -> _AsyncCMSession:
+        return _AsyncCMSession(session)
+
+    provider = PostgresBundleProvider(factory, auto_activate=True)
+    bundle = await provider.get_active_bundle(tid)
+
+    assert bundle.tenant_id == tid
+    # 1 bundle row + 4 approval rows = 5 session.add calls
+    bundle_rows = [r for r in added_rows if isinstance(r, PolicyBundleRow)]
+    approval_rows = [r for r in added_rows if isinstance(r, PolicyBundleApprovalRow)]
+    assert len(bundle_rows) == 1
+    assert len(approval_rows) == 4
+    # Transitions in order: propose (proposed->proposed), review
+    # (proposed->reviewed), approve (reviewed->approved), activate
+    # (approved->active).
+    transitions = [(a.from_status, a.to_status) for a in approval_rows]
+    assert transitions == [
+        ("proposed", "proposed"),
+        ("proposed", "reviewed"),
+        ("reviewed", "approved"),
+        ("approved", "active"),
+    ]
+    # All four approvals share one synthetic system actor
+    actor_ids = {a.actor_id for a in approval_rows}
+    assert len(actor_ids) == 1
+    assert None not in actor_ids  # synthetic system actor is a real UUID not None
+    # Final bundle row status must be 'active'
+    assert bundle_rows[0].status == "active"

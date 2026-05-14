@@ -8,6 +8,7 @@ from packages.ledger.models import (
     AgentRow,
     Base,
     EventRow,
+    PolicyBundleApprovalRow,
     PolicyBundleRow,
     PolicySnapshotRow,
     ReceiptRow,
@@ -21,6 +22,7 @@ def test_all_tables_registered():
         "tenants",
         "agents",
         "policy_bundles",
+        "policy_bundle_approvals",  # CP9.15
         "policy_snapshots",
         "events",
         "receipts",
@@ -54,9 +56,49 @@ def test_agent_columns_and_fk():
 
 def test_policy_bundle_columns_and_uq():
     cols = {c.name for c in PolicyBundleRow.__table__.columns}
-    assert cols == {"id", "tenant_id", "version", "content_hash", "content", "created_at"}
+    assert cols == {
+        "id",
+        "tenant_id",
+        "version",
+        "content_hash",
+        "content",
+        "created_at",
+        "status",  # CP9.15 - bundle approval workflow
+    }
     constraint_names = {c.name for c in PolicyBundleRow.__table__.constraints if c.name}
     assert "uq_policy_bundles_tenant_version" in constraint_names
+    assert "ck_policy_bundles_status" in constraint_names  # CP9.15
+    idx_names = {ix.name for ix in PolicyBundleRow.__table__.indexes}
+    assert "uq_policy_bundles_one_active_per_tenant" in idx_names  # CP9.15 partial UNIQUE
+
+
+def test_policy_bundle_approval_columns_and_constraints():
+    """CP9.15 / NEW-P9.8.X.bundle-approval-workflow: new policy_bundle_approvals table."""
+    cols = {c.name for c in PolicyBundleApprovalRow.__table__.columns}
+    assert cols == {
+        "id",
+        "bundle_id",
+        "tenant_id",
+        "from_status",
+        "to_status",
+        "actor_id",
+        "actor_role",
+        "reason",
+        "decided_at",
+    }
+    constraint_names = {c.name for c in PolicyBundleApprovalRow.__table__.constraints if c.name}
+    assert "ck_policy_bundle_approvals_from_status" in constraint_names
+    assert "ck_policy_bundle_approvals_to_status" in constraint_names
+    assert "ck_policy_bundle_approvals_actor_role" in constraint_names
+    idx_names = {ix.name for ix in PolicyBundleApprovalRow.__table__.indexes}
+    assert "ix_policy_bundle_approvals_bundle_decided" in idx_names
+    assert "ix_policy_bundle_approvals_tenant_decided" in idx_names
+    # FKs to policy_bundles and tenants
+    fks = {fk.target_fullname for fk in PolicyBundleApprovalRow.__table__.foreign_keys}
+    assert fks == {"policy_bundles.id", "tenants.id"}
+    # actor_id is nullable (today's auth is opaque); actor_role is NOT nullable
+    assert PolicyBundleApprovalRow.__table__.columns["actor_id"].nullable is True
+    assert PolicyBundleApprovalRow.__table__.columns["actor_role"].nullable is False
 
 
 def test_event_columns_and_indexes():
@@ -170,4 +212,4 @@ def test_tenant_agents_relationship():
 def test_base_is_declarative():
     """Base must be a DeclarativeBase subclass; sanity ping on metadata presence."""
     assert Base.metadata is not None
-    assert len(Base.metadata.tables) == 6
+    assert len(Base.metadata.tables) == 7  # CP9.15 added policy_bundle_approvals

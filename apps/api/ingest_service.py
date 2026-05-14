@@ -43,6 +43,18 @@ from packages.ledger.bundle_repository import (
     get_active_bundle_for_tenant,
     write_bundle,
 )
+from packages.ledger.bundle_workflow import (
+    activate as workflow_activate,
+)
+from packages.ledger.bundle_workflow import (
+    approve as workflow_approve,
+)
+from packages.ledger.bundle_workflow import (
+    propose as workflow_propose,
+)
+from packages.ledger.bundle_workflow import (
+    review as workflow_review,
+)
 from packages.ledger.receipt_builder import build_receipt, recompute_receipt_hash
 from packages.ledger.repositories import (
     get_latest_receipt_for_tenant,
@@ -152,11 +164,31 @@ class PostgresBundleProvider(PolicyBundleProvider):
     """Production ``PolicyBundleProvider`` backed by the bundle repository
     (CP9.14 / NEW-P9.8.24).
 
-    On each ``get_active_bundle`` call, resolves the most recently created
-    bundle for the tenant via ``get_active_bundle_for_tenant``. If no bundle
-    exists yet, falls back to building and persisting a deny-nothing default
-    (the same content shape ``DefaultBundleProvider`` uses) so the ingest
-    pipeline can run end-to-end for a brand-new tenant.
+    On each ``get_active_bundle`` call, resolves the bundle in
+    ``status='active'`` for the tenant via ``get_active_bundle_for_tenant``.
+    If no active bundle exists yet, falls back to building and persisting a
+    deny-nothing default bundle (the same content shape
+    ``DefaultBundleProvider`` uses) so the ingest pipeline can run
+    end-to-end for a brand-new tenant.
+
+    CP9.15: ``get_active_bundle_for_tenant`` now filters on
+    ``status='active'``. Fresh bundles default to ``status='proposed'``, so
+    the cache-miss bootstrap path must walk the bundle through the approval
+    workflow if it wants subsequent calls to find it. The ``auto_activate``
+    constructor flag controls this:
+
+    - ``auto_activate=True`` (the hackathon-demo default): the bootstrap
+      bundle is walked propose -> review -> approve -> activate by a
+      synthetic ``system`` actor so the demo path keeps working with a
+      single get_active_bundle call.
+    - ``auto_activate=False`` (production-correct): the bootstrap bundle is
+      only persisted in ``proposed`` status. Callers are responsible for
+      walking it through the workflow via
+      ``packages.ledger.bundle_workflow`` calls with real reviewer /
+      approver actors. Subsequent ``get_active_bundle`` calls will continue
+      to return the freshly-built (in-memory) bundle until the workflow
+      completes; the in-memory return preserves the demo behaviour without
+      lying about DB state.
 
     The provider takes an ``AsyncSession`` factory (a zero-arg callable that
     returns a session-scope context manager). This shape avoids coupling the
@@ -174,26 +206,60 @@ class PostgresBundleProvider(PolicyBundleProvider):
         session_factory: Callable[[], AbstractAsyncContextManager[AsyncSession]],
         *,
         fallback_content: dict[str, Any] | None = None,
+        auto_activate: bool = True,
     ) -> None:
         self._session_factory = session_factory
         if fallback_content is not None:
             self._fallback_content: dict[str, Any] = fallback_content
         else:
             self._fallback_content = DefaultBundleProvider._DEFAULT_CONTENT
+        self._auto_activate = auto_activate
 
     async def get_active_bundle(self, tenant_id: UUID) -> PolicyBundle:
         async with self._session_factory() as session:
             existing = await get_active_bundle_for_tenant(session, tenant_id)
             if existing is not None:
                 return existing
-            # No bundle yet for this tenant - build a default and persist it
-            # so subsequent calls return the same bundle (stable content_hash).
+            # No active bundle yet for this tenant - build and persist a
+            # default in 'proposed' status.
             bundle = build_bundle(
                 tenant_id=tenant_id,
                 version="1.0.0",
                 content=self._fallback_content,
             )
             await write_bundle(session, bundle)
+
+            if self._auto_activate:
+                # Walk the bundle through the approval workflow with a
+                # synthetic system actor so subsequent get_active_bundle
+                # calls find it via status='active'. Production callers who
+                # want real reviewer / approver identities should set
+                # auto_activate=False and drive the workflow themselves.
+                system_actor = uuid4()
+                await workflow_propose(
+                    session,
+                    bundle_id=bundle.id,
+                    author_actor_id=system_actor,
+                    reason="auto-bootstrap by PostgresBundleProvider",
+                )
+                await workflow_review(
+                    session,
+                    bundle_id=bundle.id,
+                    reviewer_actor_id=system_actor,
+                    reason="auto-bootstrap by PostgresBundleProvider",
+                )
+                await workflow_approve(
+                    session,
+                    bundle_id=bundle.id,
+                    approver_actor_id=system_actor,
+                    reason="auto-bootstrap by PostgresBundleProvider",
+                )
+                await workflow_activate(
+                    session,
+                    bundle_id=bundle.id,
+                    activator_actor_id=system_actor,
+                    reason="auto-bootstrap by PostgresBundleProvider",
+                )
             return bundle
 
 

@@ -202,6 +202,21 @@ async def test_get_active_bundle_query_filters_by_tenant_id():
 
 
 @pytest.mark.asyncio
+async def test_get_active_bundle_query_filters_on_status_active():
+    """CP9.15 regression: the WHERE clause must include ``status = 'active'``
+    so only bundles that have walked the full approval workflow are
+    considered. Pre-CP9.15 the query returned the most recently created
+    bundle regardless of status.
+    """
+    session = _session_returning_scalar_one(None)
+    await get_active_bundle_for_tenant(session, _TENANT_A)
+    stmt = session.execute.call_args[0][0]
+    compiled = stmt.compile()
+    # 'active' should appear as a bound param value
+    assert "active" in compiled.params.values()
+
+
+@pytest.mark.asyncio
 async def test_list_bundles_query_filters_by_tenant_id():
     session = _session_returning_scalars_all([])
     await list_bundles_for_tenant(session, _TENANT_B)

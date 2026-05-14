@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.api.auth import Principal, get_principal
 from packages.ledger.receipt_builder import recompute_receipt_hash
 from packages.ledger.repositories import (
     get_receipt_by_id,
@@ -179,9 +180,14 @@ async def list_receipts(
             " timezone-aware. Inclusive upper bound."
         ),
     ),
+    principal: Principal = Depends(get_principal),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> ReceiptListResponse:
     """Return up to ``limit`` Receipts for ``tenant_id``, sorted by sequence DESC.
+
+    CP9.18c: refuses if ``tenant_id`` query param does not match the
+    authenticated principal's tenant_id (403). Cross-tenant reads are
+    blocked even when the token verifies.
 
     Cursor mode (preferred): pass ``before_sequence``. Offset mode (legacy):
     pass ``offset``. If both are passed, cursor wins and ``offset`` is
@@ -192,6 +198,15 @@ async def list_receipts(
     Returns 422 if either time is naive (no tzinfo) or if
     ``signed_after > signed_before``.
     """
+    # CP9.18c: cross-tenant read protection.
+    if tenant_id != principal.tenant_id:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "tenant_mismatch",
+                "reason": "tenant_id query does not match authenticated principal.tenant_id",
+            },
+        )
     # Validation: timezone-awareness + ordering.
     if signed_after is not None and signed_after.tzinfo is None:
         raise HTTPException(
@@ -256,9 +271,14 @@ async def list_receipts(
 )
 async def get_receipt(
     receipt_id: UUID,
+    principal: Principal = Depends(get_principal),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> ReceiptDetailResponse:
     """Return full Receipt detail plus a live integrity check.
+
+    CP9.18c: refuses if the persisted receipt's tenant_id does not match
+    the authenticated principal's tenant_id (403). A leaked receipt UUID
+    is still not enough to read another tenant's data.
 
     The recomputed_receipt_hash is computed from the stored fields and the
     snapshot id; if it does not equal the stored receipt_hash, integrity_ok
@@ -268,6 +288,18 @@ async def get_receipt(
     if found is None:
         raise HTTPException(status_code=404, detail="Receipt not found")
     receipt, snapshot_id = found
+    # CP9.18c: refuse cross-tenant detail read AFTER the row is loaded so
+    # the 403 message doesn't act as an oracle ("this id exists for some
+    # tenant"). The same 404 surface would also be acceptable; we choose
+    # 403 because it's the truthful answer for an authenticated principal.
+    if receipt.tenant_id != principal.tenant_id:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "tenant_mismatch",
+                "reason": "receipt belongs to a different tenant than the principal",
+            },
+        )
     recomputed = recompute_receipt_hash(receipt, snapshot_id)
     return ReceiptDetailResponse(
         id=receipt.id,

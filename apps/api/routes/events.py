@@ -50,6 +50,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.api.auth import Principal, get_principal
 from apps.api.idempotency_store import (
     IdempotencyKeyConflict,
     IdempotencyStore,
@@ -211,6 +212,13 @@ class EventCreatedResponse(BaseModel):
                 " (length 16-128, chars A-Za-z0-9_-)."
             )
         },
+        401: {"description": "Authorization header missing or token invalid/expired"},
+        403: {
+            "description": (
+                "Authenticated principal's tenant_id or agent_id does not match the"
+                " Event body's tenant_id / agent_id"
+            )
+        },
         409: {
             "description": (
                 "Idempotency-Key was previously used for this tenant with a"
@@ -223,6 +231,7 @@ class EventCreatedResponse(BaseModel):
 async def submit_event(
     event: Event,
     response: Response,
+    principal: Principal = Depends(get_principal),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
     enforcement_client: PolicyEnforcementClient = Depends(get_enforcement_client),  # noqa: B008
     bundle_provider: PolicyBundleProvider = Depends(get_bundle_provider),  # noqa: B008
@@ -237,12 +246,35 @@ async def submit_event(
 ) -> EventCreatedResponse:
     """Accept an Event, run ingest pipeline, return 201 with the issued Receipt.
 
+    CP9.18c: the route enforces principal-to-body identity binding. The
+    Authorization-resolved ``Principal`` (tenant_id + agent_id) MUST match
+    the Event's ``tenant_id`` and ``agent_id``. Mismatch is a 403, not a 422,
+    because the request is structurally valid but the caller is acting
+    outside their authority.
+
     Idempotency contract: when the ``Idempotency-Key`` header is present,
     the body hash + key + tenant_id triple is used to dedup retries. Same
     triple within the TTL window -> the original response is returned
     unchanged. Same key + different body -> 409 Conflict. No header ->
     every request produces a new Event + Receipt (today's default).
     """
+    # ---- CP9.18c: tenant + agent identity binding ----
+    if event.tenant_id != principal.tenant_id:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "tenant_mismatch",
+                "reason": "event.tenant_id does not match authenticated principal.tenant_id",
+            },
+        )
+    if event.agent_id != principal.agent_id:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "agent_mismatch",
+                "reason": "event.agent_id does not match authenticated principal.agent_id",
+            },
+        )
     # ---- Idempotency lookup (only when the header is present) ----
     body_hash: str | None = None
     if idempotency_key is not None:

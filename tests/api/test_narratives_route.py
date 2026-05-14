@@ -19,8 +19,10 @@ from packages.policy.bundle_builder import build_bundle
 from packages.policy.lobstertrap import MockLobsterTrapClient
 from packages.policy.snapshot import capture_snapshot
 from packages.schema.receipt import Receipt
+from tests.api._auth_helpers import install_principal_override
 
 _TENANT_ID = UUID("feed0000-0000-0000-0000-000000000456")
+_AGENT_ID = UUID("feed0000-0000-0000-0000-000000000789")
 _SAMPLE_CONTENT = {"rules": [{"kind": "x", "decision": "allow"}], "default": "allow"}
 
 
@@ -121,7 +123,9 @@ async def _override_failing_client():
 
 @pytest.fixture
 def app():
-    return create_app()
+    a = create_app()
+    install_principal_override(a, tenant_id=_TENANT_ID, agent_id=_AGENT_ID)
+    return a
 
 
 @pytest.fixture

@@ -60,16 +60,20 @@ from apps.api.routes.events import (
 from apps.api.routes.receipts import get_session
 from packages.policy.enforcement import PolicyEnforcementClient
 from packages.policy.lobstertrap import MockLobsterTrapClient
+from tests.api._auth_helpers import install_principal_override
 
 # ---------------------------------------------------------------------------
 # Helpers (mirror tests/api/test_events_endpoint.py shape)
 # ---------------------------------------------------------------------------
 
 
-def _valid_event_payload(**over):
+def _valid_event_payload(tenant_id: UUID | None = None, agent_id: UUID | None = None, **over):
+    """Return a fresh valid POST /v1/events body. CP9.18c: tenant_id and
+    agent_id default to fresh UUIDs but can be supplied so they align with
+    an installed Principal."""
     base = {
-        "tenant_id": str(uuid4()),
-        "agent_id": str(uuid4()),
+        "tenant_id": str(tenant_id if tenant_id is not None else uuid4()),
+        "agent_id": str(agent_id if agent_id is not None else uuid4()),
         "trace_id": "a" * 32,
         "span_id": "b" * 16,
         "kind": "tool_call",
@@ -111,10 +115,19 @@ class _TestPolicyEnforcement(PolicyEnforcementClient):
         return await client.evaluate(tenant_id, action)
 
 
-def _install_overrides(app, *, store: IdempotencyStore | None = None) -> IdempotencyStore:
+def _install_overrides(
+    app,
+    *,
+    store: IdempotencyStore | None = None,
+    tenant_id: UUID | None = None,
+    agent_id: UUID | None = None,
+) -> tuple[IdempotencyStore, UUID, UUID]:
     """Install a coherent set of overrides for one test.
 
-    Returns the idempotency store instance so the test can introspect it.
+    Returns ``(store, tenant_id, agent_id)`` so the caller can:
+    - introspect the idempotency store,
+    - pass the (tenant_id, agent_id) into ``_valid_event_payload`` to keep
+      the principal/body identity aligned for CP9.18c.
     """
     bundle_provider = DefaultBundleProvider()
     signing_key_provider = InMemorySigningKeyProvider()
@@ -142,7 +155,13 @@ def _install_overrides(app, *, store: IdempotencyStore | None = None) -> Idempot
     app.dependency_overrides[get_enforcement_client] = _ec_override
     app.dependency_overrides[get_idempotency_store] = _is_override
 
-    return store
+    # CP9.18c: install a Principal matching the (tenant_id, agent_id) so
+    # the route's identity-binding check passes.
+    resolved_tenant = tenant_id if tenant_id is not None else uuid4()
+    resolved_agent = agent_id if agent_id is not None else uuid4()
+    install_principal_override(app, tenant_id=resolved_tenant, agent_id=resolved_agent)
+
+    return store, resolved_tenant, resolved_agent
 
 
 # ---------------------------------------------------------------------------
@@ -174,11 +193,12 @@ _VALID_KEY = "abcdefghij1234567890_test-key"  # 29 chars, matches ^[A-Za-z0-9_-]
 async def test_no_header_means_two_posts_two_events(app, client):
     """Backwards compatibility: requests without the header still produce
     independent events on each call."""
-    _install_overrides(app)
-    body = _valid_event_payload()
+    _, tid, aid = _install_overrides(app)
+    body = _valid_event_payload(tenant_id=tid, agent_id=aid)
     r1 = await client.post("/v1/events", json=body)
-    _install_overrides(app)  # fresh stores
-    r2 = await client.post("/v1/events", json=body)
+    _, tid2, aid2 = _install_overrides(app)  # fresh stores + fresh principal
+    body2 = _valid_event_payload(tenant_id=tid2, agent_id=aid2)
+    r2 = await client.post("/v1/events", json=body2)
     assert r1.status_code == 201
     assert r2.status_code == 201
     assert r1.json()["event_id"] != r2.json()["event_id"]
@@ -198,8 +218,8 @@ async def test_no_header_means_two_posts_two_events(app, client):
 async def test_same_key_same_body_returns_cached_response(app, client):
     """The core contract: two POSTs with the same Idempotency-Key and the
     same body produce identical responses on call 2 (cached replay)."""
-    store = _install_overrides(app)
-    body = _valid_event_payload()
+    store, tid, aid = _install_overrides(app)
+    body = _valid_event_payload(tenant_id=tid, agent_id=aid)
 
     r1 = await client.post("/v1/events", json=body, headers={"Idempotency-Key": _VALID_KEY})
     assert r1.status_code == 201
@@ -229,8 +249,8 @@ async def test_same_key_same_body_returns_cached_response(app, client):
 async def test_same_key_same_body_returns_same_event_id(app, client):
     """Belt + braces over the previous test: confirm the dedup actually
     prevents a second event from being persisted (no double-counting)."""
-    _install_overrides(app)
-    body = _valid_event_payload()
+    _, tid, aid = _install_overrides(app)
+    body = _valid_event_payload(tenant_id=tid, agent_id=aid)
     r1 = await client.post("/v1/events", json=body, headers={"Idempotency-Key": _VALID_KEY})
     r2 = await client.post("/v1/events", json=body, headers={"Idempotency-Key": _VALID_KEY})
     # No new event was created on call 2.
@@ -248,11 +268,12 @@ async def test_same_key_different_body_returns_409_conflict(app, client):
     """Reusing an Idempotency-Key with a different body is a client bug;
     surface 409 Conflict with a structured error so the client can log
     and rotate the key."""
-    _install_overrides(app)
-    # Same tenant_id across both requests (key is scoped per-tenant).
-    tenant_id = str(uuid4())
-    body_a = _valid_event_payload(tenant_id=tenant_id, kind="tool_call")
-    body_b = _valid_event_payload(tenant_id=tenant_id, kind="tool_result")
+    # CP9.18c: install principal whose tenant matches the body's.
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    _install_overrides(app, tenant_id=tenant_id, agent_id=agent_id)
+    body_a = _valid_event_payload(tenant_id=tenant_id, agent_id=agent_id, kind="tool_call")
+    body_b = _valid_event_payload(tenant_id=tenant_id, agent_id=agent_id, kind="tool_result")
 
     r1 = await client.post("/v1/events", json=body_a, headers={"Idempotency-Key": _VALID_KEY})
     assert r1.status_code == 201
@@ -273,19 +294,31 @@ async def test_same_key_different_body_returns_409_conflict(app, client):
 @pytest.mark.asyncio
 async def test_same_key_different_tenants_two_events(app, client):
     """Idempotency-Key is scoped per-tenant. Two tenants colliding on the
-    same key string each get their own independent record."""
-    store = _install_overrides(app)
-    tenant_a = str(uuid4())
-    tenant_b = str(uuid4())
+    same key string each get their own independent record.
+
+    CP9.18c: each request installs its OWN principal matching the body's
+    tenant (the route check is per-call).
+    """
+    tenant_a = uuid4()
+    agent_a = uuid4()
+    store, _, _ = _install_overrides(app, tenant_id=tenant_a, agent_id=agent_a)
 
     r_a = await client.post(
         "/v1/events",
-        json=_valid_event_payload(tenant_id=tenant_a),
+        json=_valid_event_payload(tenant_id=tenant_a, agent_id=agent_a),
         headers={"Idempotency-Key": _VALID_KEY},
     )
+
+    # Re-install everything for tenant B but KEEP THE SAME STORE so both
+    # tenants share the same idempotency table (verifying the per-tenant
+    # key scoping is enforced by the store contract, not by store identity).
+    tenant_b = uuid4()
+    agent_b = uuid4()
+    _install_overrides(app, store=store, tenant_id=tenant_b, agent_id=agent_b)
+
     r_b = await client.post(
         "/v1/events",
-        json=_valid_event_payload(tenant_id=tenant_b),
+        json=_valid_event_payload(tenant_id=tenant_b, agent_id=agent_b),
         headers={"Idempotency-Key": _VALID_KEY},
     )
     assert r_a.status_code == 201
@@ -307,8 +340,8 @@ async def test_same_key_different_tenants_two_events(app, client):
 async def test_different_keys_same_body_two_events(app, client):
     """The dedup token is the key, not the body. Two distinct keys on
     identical bodies produce two independent events."""
-    _install_overrides(app)
-    body = _valid_event_payload()
+    _, tid, aid = _install_overrides(app)
+    body = _valid_event_payload(tenant_id=tid, agent_id=aid)
     key_a = "key-a-with-enough-chars-12345"
     key_b = "key-b-with-enough-chars-67890"
 
@@ -351,8 +384,8 @@ async def test_malformed_idempotency_key_returns_400(app, client, bad_key):
         # rejects empty input regardless.
         pass
 
-    _install_overrides(app)
-    body = _valid_event_payload()
+    _, tid, aid = _install_overrides(app)
+    body = _valid_event_payload(tenant_id=tid, agent_id=aid)
     resp = await client.post("/v1/events", json=body, headers={"Idempotency-Key": bad_key})
     if bad_key == "":
         # Some HTTP layers drop empty-value headers entirely. Either:
@@ -383,8 +416,8 @@ async def test_malformed_idempotency_key_returns_400(app, client, bad_key):
     ][:2],  # only the two valid ones
 )
 async def test_valid_idempotency_keys_accepted(app, client, good_key):
-    _install_overrides(app)
-    body = _valid_event_payload()
+    _, tid, aid = _install_overrides(app)
+    body = _valid_event_payload(tenant_id=tid, agent_id=aid)
     resp = await client.post("/v1/events", json=body, headers={"Idempotency-Key": good_key})
     assert resp.status_code == 201
     app.dependency_overrides.clear()
@@ -403,8 +436,8 @@ async def test_concurrent_same_key_submissions_dedup_to_one_event(app, client):
     InMemoryIdempotencyStore's asyncio.Lock is what makes this safe. The
     test exercises lookup_or_claim's atomic 'check or claim' contract.
     """
-    _install_overrides(app)
-    body = _valid_event_payload()
+    _, tid, aid = _install_overrides(app)
+    body = _valid_event_payload(tenant_id=tid, agent_id=aid)
     headers = {"Idempotency-Key": _VALID_KEY}
 
     r1, r2 = await asyncio.gather(
@@ -433,8 +466,8 @@ async def test_expired_record_is_treated_as_no_record(app, client):
     with the same key + same body re-executes and overwrites."""
     # Use a 0-second TTL so the record is born-expired.
     store = InMemoryIdempotencyStore(default_ttl=timedelta(seconds=0))
-    _install_overrides(app, store=store)
-    body = _valid_event_payload()
+    _, tid, aid = _install_overrides(app, store=store)
+    body = _valid_event_payload(tenant_id=tid, agent_id=aid)
     headers = {"Idempotency-Key": _VALID_KEY}
 
     r1 = await client.post("/v1/events", json=body, headers=headers)
@@ -459,8 +492,8 @@ async def test_expired_record_is_treated_as_no_record(app, client):
 async def test_idempotent_replay_preserves_persisted_at(app, client):
     """The cached response is returned byte-for-byte; in particular,
     ``persisted_at`` is the FIRST call's timestamp, not 'now()' on replay."""
-    _install_overrides(app)
-    body = _valid_event_payload()
+    _, tid, aid = _install_overrides(app)
+    body = _valid_event_payload(tenant_id=tid, agent_id=aid)
     headers = {"Idempotency-Key": _VALID_KEY}
 
     r1 = await client.post("/v1/events", json=body, headers=headers)

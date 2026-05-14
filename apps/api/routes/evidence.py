@@ -18,6 +18,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.api.auth import Principal, get_principal
 from apps.api.routes.receipts import get_session
 from packages.export.builder import build_evidence_pack
 from packages.export.schema import EvidencePack
@@ -34,6 +35,8 @@ _MAX_RECEIPTS_PER_PACK = 1000
     response_model=EvidencePack,
     summary="Assemble an evidence pack (JSON-LD + PROV-O) for a tenant",
     responses={
+        401: {"description": "Authorization header missing or token invalid/expired"},
+        403: {"description": "Principal's tenant_id does not match the query tenant_id"},
         413: {"description": "Window contains more than 1000 receipts"},
         422: {"description": "Invalid scope window"},
     },
@@ -46,9 +49,23 @@ async def export_evidence_pack(
     scope_end: datetime = Query(  # noqa: B008
         ..., description="Inclusive end of receipt window (RFC3339 timezone-aware)"
     ),
+    principal: Principal = Depends(get_principal),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> EvidencePack:
-    """Return a signed evidence pack for ``tenant_id`` covering [scope_start, scope_end]."""
+    """Return a signed evidence pack for ``tenant_id`` covering [scope_start, scope_end].
+
+    CP9.18c: refuses if ``tenant_id`` query does not match the authenticated
+    principal's tenant_id (403). Cross-tenant evidence export is blocked.
+    """
+    # CP9.18c: cross-tenant export protection.
+    if tenant_id != principal.tenant_id:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "tenant_mismatch",
+                "reason": "tenant_id query does not match authenticated principal.tenant_id",
+            },
+        )
     if scope_start.tzinfo is None or scope_end.tzinfo is None:
         raise HTTPException(
             status_code=422, detail="scope_start and scope_end must be timezone-aware"

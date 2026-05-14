@@ -22,8 +22,10 @@ from packages.policy.bundle_builder import build_bundle
 from packages.policy.lobstertrap import MockLobsterTrapClient
 from packages.policy.snapshot import capture_snapshot
 from packages.schema.receipt import Receipt
+from tests.api._auth_helpers import install_principal_override
 
 _TENANT_ID = UUID("77777777-8888-9999-aaaa-bbbbbbbbbbbb")
+_AGENT_ID = UUID("88888888-9999-aaaa-bbbb-cccccccccccc")
 _SAMPLE_CONTENT = {"rules": [{"kind": "x", "decision": "allow"}], "default": "allow"}
 
 
@@ -127,7 +129,9 @@ def _override_session_with_pairs(pairs: list[tuple[Receipt, UUID]]):
 
 @pytest.fixture
 def app():
-    return create_app()
+    a = create_app()
+    install_principal_override(a, tenant_id=_TENANT_ID, agent_id=_AGENT_ID)
+    return a
 
 
 @pytest.fixture

@@ -41,17 +41,24 @@ from apps.api.routes.events import (
 from apps.api.routes.receipts import get_session
 from packages.policy.enforcement import PolicyEnforcementClient
 from packages.policy.lobstertrap import MockLobsterTrapClient
+from tests.api._auth_helpers import install_principal_override
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _valid_event_payload(**over):
-    """Return a fresh valid POST /v1/events body. Override any field via kwargs."""
+def _valid_event_payload(tenant_id: UUID | None = None, agent_id: UUID | None = None, **over):
+    """Return a fresh valid POST /v1/events body. Override any field via kwargs.
+
+    CP9.18c: when ``tenant_id`` / ``agent_id`` are supplied, they're used
+    directly; otherwise a fresh UUID is generated. Tests pairing this with
+    ``_install_overrides`` should pass the same ids so the body matches the
+    installed Principal.
+    """
     base = {
-        "tenant_id": str(uuid4()),
-        "agent_id": str(uuid4()),
+        "tenant_id": str(tenant_id if tenant_id is not None else uuid4()),
+        "agent_id": str(agent_id if agent_id is not None else uuid4()),
         "trace_id": "a" * 32,
         "span_id": "b" * 16,
         "kind": "tool_call",
@@ -117,9 +124,24 @@ class _TestPolicyEnforcement(PolicyEnforcementClient):
         return await client.evaluate(tenant_id, action)
 
 
-def _install_overrides(app, *, latest_receipt_row=None, captured_rows: list | None = None):
-    """Install a coherent set of overrides for one test. Returns the
-    captured_rows list so the test can inspect them."""
+def _install_overrides(
+    app,
+    *,
+    latest_receipt_row=None,
+    captured_rows: list | None = None,
+    tenant_id: UUID | None = None,
+    agent_id: UUID | None = None,
+):
+    """Install a coherent set of overrides for one test. Returns
+    ``(captured_rows, tenant_id, agent_id)`` so callers can pass those into
+    ``_valid_event_payload`` to keep the principal/body identity aligned
+    (CP9.18c). ``tenant_id`` / ``agent_id`` default to freshly generated
+    UUIDs.
+
+    The installed Principal matches the returned (tenant_id, agent_id) so
+    the route's identity-binding check passes. Negative tests that WANT a
+    tenant_mismatch can explicitly override the Principal afterwards.
+    """
     bundle_provider = DefaultBundleProvider()
     signing_key_provider = InMemorySigningKeyProvider()
     enforcement_client = _TestPolicyEnforcement(bundle_provider)
@@ -143,7 +165,13 @@ def _install_overrides(app, *, latest_receipt_row=None, captured_rows: list | No
     app.dependency_overrides[get_signing_key_provider] = _kp_override
     app.dependency_overrides[get_enforcement_client] = _ec_override
 
-    return captured
+    # CP9.18c: install a Principal matching the returned (tenant_id, agent_id)
+    # so the route's identity-binding check passes.
+    resolved_tenant = tenant_id if tenant_id is not None else uuid4()
+    resolved_agent = agent_id if agent_id is not None else uuid4()
+    install_principal_override(app, tenant_id=resolved_tenant, agent_id=resolved_agent)
+
+    return captured, resolved_tenant, resolved_agent
 
 
 # ---------------------------------------------------------------------------
@@ -170,8 +198,8 @@ async def client(app):
 
 @pytest.mark.asyncio
 async def test_post_event_persists_and_returns_201(app, client):
-    captured = _install_overrides(app)
-    resp = await client.post("/v1/events", json=_valid_event_payload())
+    captured, tid, aid = _install_overrides(app)
+    resp = await client.post("/v1/events", json=_valid_event_payload(tenant_id=tid, agent_id=aid))
     assert resp.status_code == 201
     body = resp.json()
     # New CP9.11 shape
@@ -193,8 +221,8 @@ async def test_post_event_persists_and_returns_201(app, client):
 
 @pytest.mark.asyncio
 async def test_post_event_returns_response_headers(app, client):
-    _install_overrides(app)
-    resp = await client.post("/v1/events", json=_valid_event_payload())
+    _, tid, aid = _install_overrides(app)
+    resp = await client.post("/v1/events", json=_valid_event_payload(tenant_id=tid, agent_id=aid))
     assert resp.status_code == 201
     body = resp.json()
     assert resp.headers["X-Forensa-Event-Id"] == body["event_id"]
@@ -204,8 +232,10 @@ async def test_post_event_returns_response_headers(app, client):
 
 @pytest.mark.asyncio
 async def test_post_event_accepts_full_payload(app, client):
-    _install_overrides(app)
+    _, tid, aid = _install_overrides(app)
     payload = _valid_event_payload(
+        tenant_id=tid,
+        agent_id=aid,
         parent_span_id="c" * 16,
         payload={"tool": "search", "args": {"q": "foo"}},
         reasoning="User asked X so I called search.",
@@ -220,9 +250,9 @@ async def test_post_event_accepts_full_payload(app, client):
 
 @pytest.mark.asyncio
 async def test_post_event_persisted_at_is_recent(app, client):
-    _install_overrides(app)
+    _, tid, aid = _install_overrides(app)
     before = datetime.now(UTC)
-    resp = await client.post("/v1/events", json=_valid_event_payload())
+    resp = await client.post("/v1/events", json=_valid_event_payload(tenant_id=tid, agent_id=aid))
     after = datetime.now(UTC)
     persisted_at = datetime.fromisoformat(resp.json()["persisted_at"])
     assert before <= persisted_at <= after
@@ -231,10 +261,10 @@ async def test_post_event_persisted_at_is_recent(app, client):
 
 @pytest.mark.asyncio
 async def test_post_event_returns_unique_event_and_receipt_ids(app, client):
-    _install_overrides(app)
-    r1 = await client.post("/v1/events", json=_valid_event_payload())
-    _install_overrides(app)  # reset captured rows for second request
-    r2 = await client.post("/v1/events", json=_valid_event_payload())
+    _, tid1, aid1 = _install_overrides(app)
+    r1 = await client.post("/v1/events", json=_valid_event_payload(tenant_id=tid1, agent_id=aid1))
+    _, tid2, aid2 = _install_overrides(app)  # reset captured rows + fresh principal
+    r2 = await client.post("/v1/events", json=_valid_event_payload(tenant_id=tid2, agent_id=aid2))
     assert r1.json()["event_id"] != r2.json()["event_id"]
     assert r1.json()["receipt_id"] != r2.json()["receipt_id"]
     app.dependency_overrides.clear()
@@ -251,8 +281,11 @@ async def test_post_event_with_all_event_kinds(app, client):
         "agent_message",
         "resource_access",
     ]:
-        _install_overrides(app)
-        resp = await client.post("/v1/events", json=_valid_event_payload(kind=kind))
+        _, tid, aid = _install_overrides(app)
+        resp = await client.post(
+            "/v1/events",
+            json=_valid_event_payload(tenant_id=tid, agent_id=aid, kind=kind),
+        )
         assert resp.status_code == 201, f"kind={kind} should be accepted (got {resp.status_code})"
         app.dependency_overrides.clear()
 
@@ -266,8 +299,8 @@ async def test_post_event_with_all_event_kinds(app, client):
 async def test_genesis_event_has_no_prev_receipt_hash(app, client):
     """First event for a tenant -> Receipt.prev_receipt_hash is None,
     sequence == 0. We check this by inspecting the captured ReceiptRow."""
-    captured = _install_overrides(app)
-    resp = await client.post("/v1/events", json=_valid_event_payload())
+    captured, tid, aid = _install_overrides(app)
+    resp = await client.post("/v1/events", json=_valid_event_payload(tenant_id=tid, agent_id=aid))
     assert resp.status_code == 201
     receipt_row = captured[2]  # 3rd row added (snapshot, event, receipt)
     assert receipt_row.sequence == 0
@@ -295,8 +328,16 @@ async def test_second_event_links_to_previous_receipt(app, client):
     fake_prev.agent_signature = None  # CP9.18: pre-migration-0006 chain head
     fake_prev.signed_at = datetime(2026, 5, 13, tzinfo=UTC)
 
-    payload = _valid_event_payload(tenant_id=str(fake_prev.tenant_id))
-    captured = _install_overrides(app, latest_receipt_row=fake_prev)
+    aid = uuid4()
+    # CP9.18c: install the principal whose tenant matches fake_prev.tenant_id
+    # so the body's tenant_id (=fake_prev.tenant_id) passes the identity check.
+    captured, _, _ = _install_overrides(
+        app,
+        latest_receipt_row=fake_prev,
+        tenant_id=fake_prev.tenant_id,
+        agent_id=aid,
+    )
+    payload = _valid_event_payload(tenant_id=fake_prev.tenant_id, agent_id=aid)
     resp = await client.post("/v1/events", json=payload)
     assert resp.status_code == 201
     receipt_row = captured[2]
@@ -374,7 +415,7 @@ async def test_post_event_rejects_extra_field(app, client):
 async def test_post_event_maps_ingest_failure_to_422(app, client, monkeypatch):
     """If the enforcement client raises, the route returns 422 with a
     structured error body so callers can distinguish from schema failures."""
-    _install_overrides(app)
+    _, tid, aid = _install_overrides(app)
 
     # Patch ingest_event to raise IngestServiceError
     from apps.api.ingest_service import IngestServiceError
@@ -385,7 +426,7 @@ async def test_post_event_maps_ingest_failure_to_422(app, client, monkeypatch):
 
     monkeypatch.setattr(events_module, "ingest_event", _boom)
 
-    resp = await client.post("/v1/events", json=_valid_event_payload())
+    resp = await client.post("/v1/events", json=_valid_event_payload(tenant_id=tid, agent_id=aid))
     assert resp.status_code == 422
     detail = resp.json()["detail"]
     assert detail["error"] == "ingest_failed"

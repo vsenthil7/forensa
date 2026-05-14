@@ -31,6 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.api.auth import Principal, get_principal
 from apps.api.narrative_selector import get_selection
 from apps.api.routes.receipts import get_session
 from packages.export.builder import build_evidence_pack
@@ -80,6 +81,8 @@ class NarrativeResponse(BaseModel):
     response_model=NarrativeResponse,
     summary="Generate a regulator-ready narrative for an evidence-pack window",
     responses={
+        401: {"description": "Authorization header missing or token invalid/expired"},
+        403: {"description": "Principal's tenant_id does not match the query tenant_id"},
         413: {"description": "Window contains more than 1000 receipts"},
         422: {
             "description": (
@@ -102,10 +105,26 @@ async def generate_narrative(
         ..., description="Inclusive end of receipt window (timezone-aware)"
     ),
     max_tokens: int = Query(1024, ge=64, le=4096, description="LLM completion cap"),
+    principal: Principal = Depends(get_principal),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
     client: NarrativeClient = Depends(get_narrative_client),  # noqa: B008
 ) -> NarrativeResponse:
-    """Build evidence pack, compose prompt, generate narrative, return wire form."""
+    """Build evidence pack, compose prompt, generate narrative, return wire form.
+
+    CP9.18c: refuses if ``tenant_id`` query does not match the authenticated
+    principal's tenant_id (403). Cross-tenant narrative generation is blocked
+    BEFORE any pack is assembled or any LLM tokens consumed.
+    """
+    # CP9.18c: cross-tenant narrative protection. Check first so we never
+    # pay LLM tokens for a request the caller can't see.
+    if tenant_id != principal.tenant_id:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "tenant_mismatch",
+                "reason": "tenant_id query does not match authenticated principal.tenant_id",
+            },
+        )
     if scope_start.tzinfo is None or scope_end.tzinfo is None:
         raise HTTPException(
             status_code=422, detail="scope_start and scope_end must be timezone-aware"

@@ -27,8 +27,10 @@ from packages.policy.bundle_builder import build_bundle
 from packages.policy.lobstertrap import MockLobsterTrapClient
 from packages.policy.snapshot import capture_snapshot
 from packages.schema.receipt import Receipt
+from tests.api._auth_helpers import install_principal_override
 
 _TENANT_ID = UUID("aaaaaaaa-1111-2222-3333-444444444444")
+_AGENT_ID = UUID("aaaaaaaa-2222-3333-4444-555555555555")
 _SAMPLE_CONTENT = {"rules": [{"kind": "x", "decision": "allow"}], "default": "allow"}
 
 
@@ -180,7 +182,9 @@ async def test_join_repo_no_n_plus_1_only_one_execute_call():
 
 @pytest.fixture
 def app():
-    return create_app()
+    a = create_app()
+    install_principal_override(a, tenant_id=_TENANT_ID, agent_id=_AGENT_ID)
+    return a
 
 
 @pytest.fixture

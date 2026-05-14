@@ -19,6 +19,42 @@ This repository is the implementation. Strategy and product definition live in t
 | Day 1 build (OTel GenAI ingest) | Pending |
 | Submission to TechEx | Mon 19 May 2026 |
 
+## Setup
+
+### Environment variables
+
+Forensa reads secrets and runtime config from environment variables. The canonical list lives in `.env.example` at repo root.
+
+```powershell
+# PowerShell (Windows) - one-time setup per clone
+cd C:\path\to\forensa
+Copy-Item .env.example .env
+# Edit .env in your editor; replace every `your_*_here` placeholder with a real value
+# Restart your shell so the new vars are picked up
+echo $env:FORENSA_GEMINI_API_KEY
+```
+
+```bash
+# bash / zsh / WSL
+cp .env.example .env
+$EDITOR .env
+source .env  # or use direnv / dotenv-cli to auto-load
+echo $FORENSA_GEMINI_API_KEY
+```
+
+**HARD RULES:**
+- `.env` is gitignored. Never commit it.
+- `.env.example` IS committed and acts as the documented schema of which vars are expected.
+- Never paste a real API key into chat, into a tracked file, or into a CI logs URL. Real keys live only in `.env` (local dev), GitHub Actions Secrets (CI), or KMS / Vault (production).
+
+### Gemini API key (CP9.1+)
+
+`FORENSA_GEMINI_API_KEY` enables the live narrative path (Gemini Pro via `google-generativeai` SDK against Google AI Studio). When unset, Forensa falls back to `MockNarrativeClient` (deterministic template; no network). The startup log line announces which client is wired so you always know which is in use.
+
+Create a key at https://aistudio.google.com/app/apikey (free tier available). Paste into `.env` under `FORENSA_GEMINI_API_KEY=`. See [`docs/reviews/01_Rev_Claude_20260514_0919/REVIEW_FIXES_LANDED_20260514_1302.md`](docs/reviews/01_Rev_Claude_20260514_0919/REVIEW_FIXES_LANDED_20260514_1302.md) for the 4-layer prompt-injection defence that wraps every live call.
+
+**Long-term direction:** AI Studio + API key is the hackathon path. For production / enterprise customers, Vertex AI (with GCP IAM + VPC Service Controls + Customer-Managed Encryption Keys) is the right authentication boundary. Tracked as `NEW-P13.X.vertex-migration` in the review backlog.
+
 ## Wedge
 
 Every incumbent in the AI runtime space — Microsoft AGT, Preloop, AWS Bedrock AgentCore, Veea Lobster Trap itself — is building **enforcement**. Nobody is building **evidence**.

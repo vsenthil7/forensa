@@ -108,7 +108,7 @@ def build_evidence_pack(
 
     bind = {
         "header": header.model_dump(mode="json"),
-        "receipts": [it.model_dump(mode="json") for it in items],
+        "receipts": [_canonicalise_item(it) for it in items],
         "activities": [a.model_dump(mode="json") for a in activities],
     }
     root_hash = sha256_hex(bind)
@@ -121,6 +121,19 @@ def build_evidence_pack(
     )
 
 
+def _canonicalise_item(it: ReceiptEvidenceItem) -> dict[str, object]:
+    """Dump a ReceiptEvidenceItem with None prev_receipt_hash bound as "".
+
+    canonical_json forbids None values. Genesis receipts carry
+    prev_receipt_hash=None at the model level; bind it as empty-string
+    sentinel here to keep the canonical hash stable.
+    """
+    d = it.model_dump(mode="json")
+    if d.get("prev_receipt_hash") is None:
+        d["prev_receipt_hash"] = ""
+    return d
+
+
 def verify_evidence_pack(pack: EvidencePack) -> bool:
     """Recompute root_hash from the pack content; True iff matches.
 
@@ -129,7 +142,7 @@ def verify_evidence_pack(pack: EvidencePack) -> bool:
     """
     bind = {
         "header": pack.header.model_dump(mode="json"),
-        "receipts": [it.model_dump(mode="json") for it in pack.receipts],
+        "receipts": [_canonicalise_item(it) for it in pack.receipts],
         "activities": [a.model_dump(mode="json") for a in pack.activities],
     }
     return sha256_hex(bind) == pack.root_hash

@@ -205,7 +205,17 @@ def test_mock_applies_latency_when_positive():
     start = time.perf_counter()
     _run(mock.evaluate(_TENANT_ID, {"kind": "x"}))
     elapsed_ms = (time.perf_counter() - start) * 1000
-    assert elapsed_ms >= 18  # allow scheduler slack
+    # Lower bound: at least 70% of requested latency (14ms of the 20ms
+    # requested) to absorb Windows scheduler jitter under load. Was >= 18
+    # which flaked occasionally on loaded runners. The test's intent is
+    # "latency_ms > 0 actually sleeps for approximately that long", not
+    # "sleep is precise to the ms". CP9.32 widening per
+    # NEW-P10.X.lobstertrap-latency-test-robustness.
+    assert elapsed_ms >= 14
+    # Upper bound: prove the sleep is roughly the requested amount, not
+    # an unbounded hang. 10x slack (200ms ceiling for a 20ms request) is
+    # generous on any non-pathological runner.
+    assert elapsed_ms <= 200
 
 
 def test_mock_rejects_non_dict_action():

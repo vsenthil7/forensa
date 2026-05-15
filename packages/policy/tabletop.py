@@ -36,9 +36,11 @@ PRODUCTION-DEFERRED:
     synthetic events as inline payloads; production wants the option to
     replay a window of real historical events against a candidate bundle
     (read-only on the ledger).
-  - NEW-P12.X.tabletop-diff-report: compare the simulated decisions
-    against the actual decisions for the same events under the live
-    bundle, surfacing only the diffs.
+  - (closed in CP9.38) NEW-P12.X.tabletop-diff-report: compare the
+    simulated decisions against the actual decisions for the same events
+    under the live bundle, surfacing only the diffs. See
+    ``diff_tabletop_results`` + ``TabletopDiffEntry`` + ``TabletopDiffReport``
+    at the bottom of this module.
 """
 
 from __future__ import annotations
@@ -211,3 +213,193 @@ async def simulate_scenario(
         action_results=action_results,
         summary=summary,
     )
+
+
+# ---------------------------------------------------------------------------
+# CP9.38 / NEW-P12.X.tabletop-diff-report
+# ---------------------------------------------------------------------------
+#
+# A security engineer who has run TWO simulations -- one against the
+# proposed bundle, one against the active bundle -- wants to see ONLY the
+# actions where the two bundles disagree. This is the operational shape
+# of the question "what behaviour would change if I deployed the proposed
+# bundle?". A side-by-side table of allow/deny/escalate for all 1000
+# actions is overwhelming; a 10-row diff is actionable.
+#
+# The diff function is pure (no I/O) and operates on TabletopResult or
+# list[TabletopActionResult] inputs. It joins the two lists by
+# `action_label` and emits per-action drift entries classified as:
+#
+#   match           -- both sides produced the same decision (omitted from
+#                      the report by default; surface only on demand)
+#   drift           -- both sides produced a decision, but different ones
+#   simulated_only  -- label present in simulated, absent in actual
+#   actual_only     -- label present in actual, absent in simulated
+#   errored_either  -- at least one side raised; surface the error reason
+#
+# This is the smallest useful diff vocabulary. A future CP can add
+# "materiality scoring" (which drifts matter most) but that requires
+# additional context the diff itself doesn't have.
+
+
+class TabletopDiffEntry(BaseModel):
+    """One row in a TabletopDiffReport.
+
+    The ``kind`` discriminator names the relationship between the two sides.
+    Fields that don't apply to a kind are None (e.g. ``actual_decision`` is
+    None on a ``simulated_only`` row).
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    label: str = Field(..., description="Action label being diffed")
+    kind: str = Field(
+        ...,
+        description=("One of: match | drift | simulated_only | actual_only | errored_either"),
+    )
+    simulated_decision: PolicyDecision | None = Field(
+        ..., description="Decision under the simulated (proposed) bundle, None if absent or errored"
+    )
+    simulated_reason: str | None = Field(..., description="Reason / error from the simulated side")
+    actual_decision: PolicyDecision | None = Field(
+        ..., description="Decision under the actual (active) bundle, None if absent or errored"
+    )
+    actual_reason: str | None = Field(..., description="Reason / error from the actual side")
+
+
+class TabletopDiffReport(BaseModel):
+    """Output of ``diff_tabletop_results()``.
+
+    Includes per-label entries plus aggregate counts so callers don't have
+    to re-scan to render a header. ``entries`` is sorted by label for
+    deterministic output across calls with the same inputs.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    entries: list[TabletopDiffEntry]
+    total_simulated: int = Field(..., ge=0)
+    total_actual: int = Field(..., ge=0)
+    match_count: int = Field(..., ge=0)
+    drift_count: int = Field(..., ge=0)
+    simulated_only_count: int = Field(..., ge=0)
+    actual_only_count: int = Field(..., ge=0)
+    errored_either_count: int = Field(..., ge=0)
+
+
+_DIFF_KIND_MATCH = "match"
+_DIFF_KIND_DRIFT = "drift"
+_DIFF_KIND_SIM_ONLY = "simulated_only"
+_DIFF_KIND_ACT_ONLY = "actual_only"
+_DIFF_KIND_ERRORED = "errored_either"
+
+
+def diff_tabletop_results(
+    simulated: TabletopResult | list[TabletopActionResult],
+    actual: TabletopResult | list[TabletopActionResult],
+    *,
+    include_matches: bool = False,
+) -> TabletopDiffReport:
+    """Join two tabletop result sets by action label and emit per-action drift entries.
+
+    Parameters
+    ----------
+    simulated
+        The simulated (proposed-bundle) result, either a full
+        ``TabletopResult`` or its ``.action_results`` list directly.
+    actual
+        The actual (active-bundle) result, same shape options.
+    include_matches
+        When False (default), entries with kind="match" are omitted from
+        the report's ``entries`` list. They're still counted in
+        ``match_count``. When True, all rows are included -- useful for
+        full audit trails. The diff use case ("show me only the
+        differences") is the False default.
+
+    Returns
+    -------
+    TabletopDiffReport
+        Per-label entries sorted by label, plus aggregate counts.
+
+    Raises
+    ------
+    TabletopError
+        If either side has duplicate labels (the diff join is by label
+        and requires uniqueness on each side).
+    """
+    sim_results = simulated.action_results if isinstance(simulated, TabletopResult) else simulated
+    act_results = actual.action_results if isinstance(actual, TabletopResult) else actual
+
+    sim_by_label = _index_by_label(sim_results, "simulated")
+    act_by_label = _index_by_label(act_results, "actual")
+
+    all_labels = sorted(set(sim_by_label.keys()) | set(act_by_label.keys()))
+
+    entries: list[TabletopDiffEntry] = []
+    counts = {
+        _DIFF_KIND_MATCH: 0,
+        _DIFF_KIND_DRIFT: 0,
+        _DIFF_KIND_SIM_ONLY: 0,
+        _DIFF_KIND_ACT_ONLY: 0,
+        _DIFF_KIND_ERRORED: 0,
+    }
+
+    for label in all_labels:
+        sim_row = sim_by_label.get(label)
+        act_row = act_by_label.get(label)
+
+        if sim_row is None:
+            kind = _DIFF_KIND_ACT_ONLY
+        elif act_row is None:
+            kind = _DIFF_KIND_SIM_ONLY
+        elif sim_row.errored or act_row.errored:
+            kind = _DIFF_KIND_ERRORED
+        elif sim_row.decision == act_row.decision:
+            kind = _DIFF_KIND_MATCH
+        else:
+            kind = _DIFF_KIND_DRIFT
+
+        counts[kind] += 1
+
+        if kind == _DIFF_KIND_MATCH and not include_matches:
+            continue
+
+        entries.append(
+            TabletopDiffEntry(
+                label=label,
+                kind=kind,
+                simulated_decision=sim_row.decision if sim_row else None,
+                simulated_reason=sim_row.reason if sim_row else None,
+                actual_decision=act_row.decision if act_row else None,
+                actual_reason=act_row.reason if act_row else None,
+            )
+        )
+
+    return TabletopDiffReport(
+        entries=entries,
+        total_simulated=len(sim_results),
+        total_actual=len(act_results),
+        match_count=counts[_DIFF_KIND_MATCH],
+        drift_count=counts[_DIFF_KIND_DRIFT],
+        simulated_only_count=counts[_DIFF_KIND_SIM_ONLY],
+        actual_only_count=counts[_DIFF_KIND_ACT_ONLY],
+        errored_either_count=counts[_DIFF_KIND_ERRORED],
+    )
+
+
+def _index_by_label(
+    rows: list[TabletopActionResult], side_name: str
+) -> dict[str, TabletopActionResult]:
+    """Build a label -> row index, raising on duplicate labels.
+
+    The diff join is by label; duplicate labels on either side make the
+    join ambiguous. Raise rather than silently merging.
+    """
+    out: dict[str, TabletopActionResult] = {}
+    for row in rows:
+        if row.label in out:
+            raise TabletopError(
+                f"duplicate label {row.label!r} in {side_name} side -- diff join is by label"
+            )
+        out[row.label] = row
+    return out

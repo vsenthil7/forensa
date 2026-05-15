@@ -16,10 +16,14 @@ from packages.policy.enforcement import (
 )
 from packages.policy.lobstertrap import MockLobsterTrapClient
 from packages.policy.tabletop import (
+    TabletopActionResult,
     TabletopActionSpec,
+    TabletopDiffEntry,
+    TabletopDiffReport,
     TabletopError,
     TabletopResult,
     TabletopScenario,
+    diff_tabletop_results,
     simulate_scenario,
 )
 
@@ -307,3 +311,208 @@ async def test_simulate_result_carries_bundle_metadata_for_audit() -> None:
     assert result.bundle_version == bundle.version
     assert result.bundle_content_hash == bundle.content_hash
     assert len(result.bundle_content_hash) == 64
+
+
+# ---------- CP9.38 / NEW-P12.X.tabletop-diff-report ----------
+#
+# diff_tabletop_results joins two TabletopResult action lists by label and
+# classifies each label as match | drift | simulated_only | actual_only |
+# errored_either. The default `include_matches=False` shows only the
+# differences (operational shape). These tests cover every kind + the
+# duplicate-label guard + the include_matches=True audit-trail mode.
+
+
+def _row(
+    label: str, decision: PolicyDecision | None, reason: str | None = None, errored: bool = False
+) -> TabletopActionResult:
+    return TabletopActionResult(
+        label=label, decision=decision, reason=reason or "", errored=errored
+    )
+
+
+def test_diff_all_match_returns_empty_entries_by_default() -> None:
+    sim = [_row("a", PolicyDecision.ALLOW), _row("b", PolicyDecision.DENY)]
+    act = [_row("a", PolicyDecision.ALLOW), _row("b", PolicyDecision.DENY)]
+    report = diff_tabletop_results(sim, act)
+    assert report.match_count == 2
+    assert report.drift_count == 0
+    assert report.entries == []
+    assert report.total_simulated == 2
+    assert report.total_actual == 2
+
+
+def test_diff_all_match_with_include_matches_emits_all_entries() -> None:
+    sim = [_row("a", PolicyDecision.ALLOW), _row("b", PolicyDecision.DENY)]
+    act = [_row("a", PolicyDecision.ALLOW), _row("b", PolicyDecision.DENY)]
+    report = diff_tabletop_results(sim, act, include_matches=True)
+    assert report.match_count == 2
+    assert len(report.entries) == 2
+    assert all(e.kind == "match" for e in report.entries)
+
+
+def test_diff_drift_surfaces_decision_change() -> None:
+    """Same label, different decision -> drift."""
+    sim = [_row("a", PolicyDecision.DENY, reason="proposed-blocks")]
+    act = [_row("a", PolicyDecision.ALLOW, reason="active-allows")]
+    report = diff_tabletop_results(sim, act)
+    assert report.drift_count == 1
+    assert len(report.entries) == 1
+    entry = report.entries[0]
+    assert entry.label == "a"
+    assert entry.kind == "drift"
+    assert entry.simulated_decision == PolicyDecision.DENY
+    assert entry.actual_decision == PolicyDecision.ALLOW
+    assert entry.simulated_reason == "proposed-blocks"
+    assert entry.actual_reason == "active-allows"
+
+
+def test_diff_simulated_only_when_label_absent_from_actual() -> None:
+    sim = [_row("new-label", PolicyDecision.DENY)]
+    act: list[TabletopActionResult] = []
+    report = diff_tabletop_results(sim, act)
+    assert report.simulated_only_count == 1
+    assert len(report.entries) == 1
+    entry = report.entries[0]
+    assert entry.kind == "simulated_only"
+    assert entry.simulated_decision == PolicyDecision.DENY
+    assert entry.actual_decision is None
+    assert entry.actual_reason is None
+
+
+def test_diff_actual_only_when_label_absent_from_simulated() -> None:
+    sim: list[TabletopActionResult] = []
+    act = [_row("orphan", PolicyDecision.ALLOW)]
+    report = diff_tabletop_results(sim, act)
+    assert report.actual_only_count == 1
+    assert len(report.entries) == 1
+    entry = report.entries[0]
+    assert entry.kind == "actual_only"
+    assert entry.simulated_decision is None
+    assert entry.actual_decision == PolicyDecision.ALLOW
+
+
+def test_diff_errored_either_when_simulated_side_errored() -> None:
+    sim = [_row("a", None, reason="enforcement_error: oops", errored=True)]
+    act = [_row("a", PolicyDecision.ALLOW)]
+    report = diff_tabletop_results(sim, act)
+    assert report.errored_either_count == 1
+    assert len(report.entries) == 1
+    entry = report.entries[0]
+    assert entry.kind == "errored_either"
+    assert entry.simulated_decision is None
+    assert entry.actual_decision == PolicyDecision.ALLOW
+
+
+def test_diff_errored_either_when_actual_side_errored() -> None:
+    sim = [_row("a", PolicyDecision.ALLOW)]
+    act = [_row("a", None, reason="enforcement_error: oops", errored=True)]
+    report = diff_tabletop_results(sim, act)
+    assert report.errored_either_count == 1
+    assert report.entries[0].kind == "errored_either"
+
+
+def test_diff_entries_sorted_by_label_for_deterministic_output() -> None:
+    sim = [
+        _row("z", PolicyDecision.DENY),
+        _row("a", PolicyDecision.DENY),
+        _row("m", PolicyDecision.DENY),
+    ]
+    act = [
+        _row("z", PolicyDecision.ALLOW),
+        _row("a", PolicyDecision.ALLOW),
+        _row("m", PolicyDecision.ALLOW),
+    ]
+    report = diff_tabletop_results(sim, act)
+    labels = [e.label for e in report.entries]
+    assert labels == sorted(labels)
+    assert labels == ["a", "m", "z"]
+
+
+def test_diff_rejects_duplicate_labels_on_simulated_side() -> None:
+    sim = [
+        _row("dup", PolicyDecision.ALLOW),
+        _row("dup", PolicyDecision.DENY),
+    ]
+    act = [_row("dup", PolicyDecision.ALLOW)]
+    with pytest.raises(TabletopError, match="duplicate label"):
+        diff_tabletop_results(sim, act)
+
+
+def test_diff_rejects_duplicate_labels_on_actual_side() -> None:
+    sim = [_row("dup", PolicyDecision.ALLOW)]
+    act = [
+        _row("dup", PolicyDecision.ALLOW),
+        _row("dup", PolicyDecision.DENY),
+    ]
+    with pytest.raises(TabletopError, match="duplicate label"):
+        diff_tabletop_results(sim, act)
+
+
+@pytest.mark.asyncio
+async def test_diff_accepts_tabletop_result_objects_directly() -> None:
+    """diff_tabletop_results accepts TabletopResult or list[TabletopActionResult]."""
+    bundle = _bundle()
+    client = _client(bundle)
+    scenario = TabletopScenario(
+        name="s1",
+        tenant_id=_TENANT,
+        policy_bundle_id=bundle.id,
+        actions=[
+            TabletopActionSpec(label="a", action={"kind": "deny_kind"}),
+            TabletopActionSpec(label="b", action={"kind": "ok"}),
+        ],
+    )
+    sim_result = await simulate_scenario(
+        scenario=scenario, bundle=bundle, enforcement_client=client
+    )
+    act_result = await simulate_scenario(
+        scenario=scenario, bundle=bundle, enforcement_client=client
+    )
+    # Same bundle + same scenario -> all match.
+    report = diff_tabletop_results(sim_result, act_result)
+    assert report.match_count == 2
+    assert report.drift_count == 0
+    assert report.entries == []
+
+
+def test_diff_mixed_report_classifies_every_label_correctly() -> None:
+    """End-to-end: every diff kind in one report."""
+    sim = [
+        _row("matches", PolicyDecision.ALLOW),
+        _row("drifts", PolicyDecision.DENY),
+        _row("only-sim", PolicyDecision.ESCALATE),
+        _row("both-errored", None, reason="err", errored=True),
+    ]
+    act = [
+        _row("matches", PolicyDecision.ALLOW),
+        _row("drifts", PolicyDecision.ALLOW),
+        _row("only-act", PolicyDecision.DENY),
+        _row("both-errored", PolicyDecision.ALLOW),
+    ]
+    report = diff_tabletop_results(sim, act)
+    # Counts.
+    assert report.match_count == 1
+    assert report.drift_count == 1
+    assert report.simulated_only_count == 1
+    assert report.actual_only_count == 1
+    assert report.errored_either_count == 1
+    # Entries (no matches by default) -> 4 entries.
+    assert len(report.entries) == 4
+    kinds = {e.label: e.kind for e in report.entries}
+    assert kinds["drifts"] == "drift"
+    assert kinds["only-sim"] == "simulated_only"
+    assert kinds["only-act"] == "actual_only"
+    assert kinds["both-errored"] == "errored_either"
+
+
+def test_diff_entry_and_report_are_frozen() -> None:
+    sim = [_row("a", PolicyDecision.ALLOW)]
+    act = [_row("a", PolicyDecision.DENY)]
+    report = diff_tabletop_results(sim, act)
+    assert isinstance(report, TabletopDiffReport)
+    assert isinstance(report.entries[0], TabletopDiffEntry)
+    # Frozen: mutation raises.
+    with pytest.raises(ValueError):
+        report.entries[0].label = "changed"  # type: ignore[misc]
+    with pytest.raises(ValueError):
+        report.match_count = 99  # type: ignore[misc]

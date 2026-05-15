@@ -14,6 +14,7 @@ from apps.api.routes import evidence as evidence_routes
 from apps.api.routes import exports as exports_routes
 from apps.api.routes import narratives as narratives_routes
 from apps.api.routes import receipts as receipts_routes
+from apps.api.routes import tabletop as tabletop_routes
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,7 @@ def create_app() -> FastAPI:
     app.include_router(narratives_routes.router)
     app.include_router(anchors_routes.router)
     app.include_router(exports_routes.router)
+    app.include_router(tabletop_routes.router)
 
     return app
 

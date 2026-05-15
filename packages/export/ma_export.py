@@ -44,7 +44,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
 from packages.crypto.hash import sha256_hex
 from packages.crypto.sign import sign as ed25519_sign
@@ -130,12 +130,59 @@ class MaDiligenceExport(BaseModel):
             raise ValueError("ma_root_hash must be lowercase hex")
         return v
 
+    @field_validator("platform_signature", mode="before")
+    @classmethod
+    def _sig_accept_b64(cls, v: object) -> object:
+        """Accept both raw 64-byte signatures (build path) and base64-encoded
+        strings (deserialization path).
+
+        When a signed MaDiligenceExport round-trips through JSON (CP9.44
+        async-job result_export persistence, or any future S3 / email
+        delivery), the bytes field is serialised as base64. The model
+        must accept that string on the way back in and decode it to 64
+        raw bytes. Existing build paths still pass raw bytes; this
+        validator is a no-op for those.
+        """
+        if v is None:
+            return None
+        if isinstance(v, bytes):
+            return v
+        if isinstance(v, str):
+            # base64 string; pad if needed (urlsafe and standard both work
+            # for raw bytes since the Ed25519 signature won't ever contain
+            # the +/-/= boundaries differently).
+            import base64 as _b64
+
+            padded = v + "=" * (-len(v) % 4)
+            try:
+                return _b64.b64decode(padded)
+            except (ValueError, _b64.binascii.Error) as exc:  # type: ignore[attr-defined]
+                raise ValueError(f"platform_signature is not valid base64: {exc}") from exc
+        raise TypeError(f"platform_signature must be bytes or base64 str; got {type(v).__name__}")
+
     @field_validator("platform_signature")
     @classmethod
     def _sig_len(cls, v: bytes | None) -> bytes | None:
         if v is not None and len(v) != 64:
             raise ValueError(f"platform_signature must be 64 bytes Ed25519; got {len(v)}")
         return v
+
+    @field_serializer("platform_signature", when_used="json")
+    def _serialise_sig(self, v: bytes | None) -> str | None:
+        """Base64-encode the signature for JSON serialisation.
+
+        Pydantic v2's default bytes-to-JSON path tries `.decode('utf-8')`
+        which fails for raw Ed25519 signature bytes (e.g. 0x93 is not a
+        valid UTF-8 start byte). We override with standard b64 so the
+        result is round-trippable: model_dump_json -> JSON -> model_validate
+        recovers the original 64-byte signature via the `_sig_accept_b64`
+        validator above.
+        """
+        if v is None:
+            return None
+        import base64 as _b64
+
+        return _b64.b64encode(v).decode("ascii")
 
 
 def build_ma_diligence_export(

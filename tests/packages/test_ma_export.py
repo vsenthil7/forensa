@@ -427,3 +427,140 @@ def test_signed_export_content_still_verifies_via_ma_root_hash() -> None:
     priv, _ = _platform_keypair()
     signed = sign_ma_diligence_export(export, platform_private_key=priv, platform_key_id="k1")
     assert verify_ma_diligence_export(signed) is True
+
+
+# ---------- CP9.44 JSON round-trip (closes latent serialisation bug) ----------
+#
+# Before CP9.44, MaDiligenceExport.platform_signature was bytes with no
+# field_serializer override. Pydantic v2's default bytes-to-JSON path
+# calls .decode('utf-8') which fails for raw Ed25519 signature bytes
+# (most signatures contain bytes >= 0x80 which are not valid UTF-8 start
+# bytes). The CP9.34 tests above all verify SIGNED bundles structurally
+# but never serialise them to JSON, so the bug was unguarded for ~24
+# hours until CP9.44's PG-integration test of run_ma_export_job exposed
+# it (the runner persists result_export as JSONB, which goes via
+# model_dump_json).
+#
+# CP9.44 added two ma_export.py changes:
+#   1. @field_serializer("platform_signature", when_used="json") that
+#      base64-encodes the bytes for JSON output.
+#   2. @field_validator("platform_signature", mode="before") that accepts
+#      both raw bytes (build path) and base64 strings (deserialise path).
+#
+# These tests lock in the round-trip contract.
+
+
+def test_signed_export_serialises_to_json_without_error() -> None:
+    """model_dump_json on a signed bundle must succeed (used to raise
+    PydanticSerializationError 'invalid utf-8 sequence' before CP9.44)."""
+    export = _unsigned_empty_export()
+    priv, _ = _platform_keypair()
+    signed = sign_ma_diligence_export(export, platform_private_key=priv, platform_key_id="k1")
+    j = signed.model_dump_json(by_alias=True)
+    assert isinstance(j, str)
+    assert len(j) > 0
+    # Signature is in the JSON as a base64 string, NOT as a UTF-8-decoded
+    # garbled string. Verify by parsing back to dict and checking the field.
+    import json as _json
+
+    parsed = _json.loads(j)
+    assert isinstance(parsed["platform_signature"], str)
+    # Standard base64 of 64 bytes is 88 chars including padding.
+    assert len(parsed["platform_signature"]) == 88
+    assert parsed["platform_key_id"] == "k1"
+
+
+def test_signed_export_round_trips_through_json_preserves_signature() -> None:
+    """Serialise + parse back -> the signature bytes match exactly + verify
+    still passes under the original public key."""
+    export = _unsigned_empty_export()
+    priv, pub = _platform_keypair()
+    signed = sign_ma_diligence_export(export, platform_private_key=priv, platform_key_id="k1")
+    original_sig = signed.platform_signature
+
+    j = signed.model_dump_json(by_alias=True)
+    recovered = MaDiligenceExport.model_validate_json(j)
+
+    assert recovered.platform_signature == original_sig
+    assert recovered.platform_key_id == "k1"
+    # The provenance proof survives the round-trip.
+    assert verify_ma_diligence_export_signature(recovered, platform_public_key=pub) is True
+    # And the content proof too.
+    assert verify_ma_diligence_export(recovered) is True
+
+
+def test_unsigned_export_round_trips_with_null_signature() -> None:
+    """Unsigned bundles also survive JSON round-trip; the signature is null."""
+    export = _unsigned_empty_export()
+    j = export.model_dump_json(by_alias=True)
+    recovered = MaDiligenceExport.model_validate_json(j)
+    assert recovered.platform_signature is None
+    assert recovered.platform_key_id is None
+    assert verify_ma_diligence_export(recovered) is True
+
+
+def test_signed_export_accepts_base64_string_on_validate() -> None:
+    """Direct model_validate with a base64 string for platform_signature
+    must work (the CP9.44 mode='before' validator)."""
+    export = _unsigned_empty_export()
+    priv, pub = _platform_keypair()
+    signed = sign_ma_diligence_export(export, platform_private_key=priv, platform_key_id="k1")
+
+    # Build a dict with the signature as a base64 STRING (the wire form).
+    sig_b64 = base64.b64encode(signed.platform_signature).decode("ascii")
+    wire_dict = signed.model_dump(by_alias=True)
+    wire_dict["platform_signature"] = sig_b64
+
+    recovered = MaDiligenceExport.model_validate(wire_dict)
+    assert recovered.platform_signature == signed.platform_signature
+    assert verify_ma_diligence_export_signature(recovered, platform_public_key=pub) is True
+
+
+def test_signed_export_rejects_garbage_base64_string() -> None:
+    """A malformed base64 string for platform_signature -> ValidationError."""
+    from pydantic import ValidationError
+
+    export = _unsigned_empty_export()
+    priv, _ = _platform_keypair()
+    signed = sign_ma_diligence_export(export, platform_private_key=priv, platform_key_id="k1")
+    wire_dict = signed.model_dump(by_alias=True)
+    # Non-ASCII char -> base64 decoder raises -> field_validator wraps as ValueError
+    # -> Pydantic surfaces as ValidationError.
+    wire_dict["platform_signature"] = "AAAA" + chr(255)
+
+    with pytest.raises(ValidationError):
+        MaDiligenceExport.model_validate(wire_dict)
+
+
+def test_signed_export_rejects_wrong_length_signature_after_b64_decode() -> None:
+    """Base64 string that decodes to non-64-byte data -> ValidationError."""
+    from pydantic import ValidationError
+
+    export = _unsigned_empty_export()
+    priv, _ = _platform_keypair()
+    signed = sign_ma_diligence_export(export, platform_private_key=priv, platform_key_id="k1")
+    wire_dict = signed.model_dump(by_alias=True)
+    # 16 bytes of base64 = 24 chars including padding. Wrong length when
+    # decoded -> _sig_len validator rejects.
+    wire_dict["platform_signature"] = base64.b64encode(b"\x00" * 16).decode("ascii")
+
+    with pytest.raises(ValidationError, match="64 bytes"):
+        MaDiligenceExport.model_validate(wire_dict)
+
+
+def test_signed_export_rejects_int_for_signature() -> None:
+    """Non-bytes, non-str input for platform_signature -> TypeError
+    (or ValidationError, depending on Pydantic surfacing)."""
+    from pydantic import ValidationError
+
+    export = _unsigned_empty_export()
+    priv, _ = _platform_keypair()
+    signed = sign_ma_diligence_export(export, platform_private_key=priv, platform_key_id="k1")
+    wire_dict = signed.model_dump(by_alias=True)
+    wire_dict["platform_signature"] = 12345  # nonsense type
+
+    # Pydantic v2's mode='before' validator that raises TypeError can
+    # surface as either TypeError directly or ValidationError-wrapped,
+    # depending on version. Accept either.
+    with pytest.raises((TypeError, ValidationError)):
+        MaDiligenceExport.model_validate(wire_dict)

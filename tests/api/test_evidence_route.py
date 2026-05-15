@@ -93,6 +93,20 @@ def _override_session_with_pairs(pairs: list[tuple[Receipt, UUID]]):
     all_rows = [(r, _make_row(r, sid)) for r, sid in pairs]
 
     async def _execute(stmt):
+        # CP9.24: route now executes TWO selects per request - the receipts
+        # JOIN AND a fresh anchor lookup. The anchor select targets
+        # TimestampAnchorRow; detect that shape via the compiled SQL and
+        # return an empty scalar so the route gets None back (anchorless
+        # pack). The receipts select targets ReceiptRow; honour the
+        # signed_at window as before.
+        sql_str = str(stmt)
+        if "timestamp_anchors" in sql_str.lower():
+            scalars_mock = MagicMock()
+            scalars_mock.all = MagicMock(return_value=[])
+            result = MagicMock()
+            result.scalars = MagicMock(return_value=scalars_mock)
+            result.scalar_one_or_none = MagicMock(return_value=None)
+            return result
         # Extract the signed_at window from the SELECT's compiled parameters
         # so the mock honours the WHERE clause the real DB would apply.
         try:

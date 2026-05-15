@@ -24,13 +24,15 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import Response
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.auth import Principal, get_principal
 from apps.api.routes.receipts import get_session
 from packages.export.builder import build_evidence_pack
 from packages.export.pdf_renderer import render_evidence_pack_pdf
-from packages.export.schema import EvidencePack
+from packages.export.schema import AnchorEvidence, EvidencePack
+from packages.ledger.models import TimestampAnchorRow
 from packages.ledger.repositories import list_receipts_with_snapshot_for_tenant
 
 router = APIRouter(prefix="/v1", tags=["evidence"])
@@ -137,6 +139,7 @@ async def export_evidence_pack(
         scope_start=scope_start,
         scope_end=scope_end,
         receipts_with_snapshots=pairs,
+        anchor=await _latest_anchor_in_window(session, tenant_id, scope_start, scope_end),
     )
 
     # CP9.21b: content negotiation. PDF when Accept asks for it, else JSON-LD.
@@ -155,3 +158,35 @@ async def export_evidence_pack(
         )
 
     return pack
+
+
+async def _latest_anchor_in_window(
+    session: AsyncSession,
+    tenant_id: UUID,
+    scope_start: datetime,
+    scope_end: datetime,
+) -> AnchorEvidence | None:
+    """Look up the most recent TimestampAnchorRow whose anchor_date falls in window.
+
+    Returns AnchorEvidence (converted via from_anchor_row) or None when no
+    anchor row exists for the tenant inside the window. CP9.24 wires the
+    pack-time anchor embed: any pack whose scope window includes one or
+    more anchored days carries the latest anchor's TSA proof, bound into
+    root_hash. Older scope windows that predate anchoring continue to
+    produce anchorless packs.
+    """
+    stmt = (
+        select(TimestampAnchorRow)
+        .where(
+            TimestampAnchorRow.tenant_id == tenant_id,
+            TimestampAnchorRow.anchor_date >= scope_start,
+            TimestampAnchorRow.anchor_date <= scope_end,
+        )
+        .order_by(TimestampAnchorRow.anchor_date.desc())
+        .limit(1)
+    )
+    result = await session.execute(stmt)
+    row = result.scalar_one_or_none()
+    if row is None:
+        return None
+    return AnchorEvidence.from_anchor_row(row)

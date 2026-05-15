@@ -84,6 +84,16 @@ def _override_session_with_pairs(pairs: list[tuple[Receipt, UUID]]):
     all_rows = [(r, _make_row(r, sid)) for r, sid in pairs]
 
     async def _execute(stmt):
+        # CP9.24: route now executes TWO selects per request (receipts + anchor).
+        # See test_evidence_route.py for rationale.
+        sql_str = str(stmt)
+        if "timestamp_anchors" in sql_str.lower():
+            scalars_mock = MagicMock()
+            scalars_mock.all = MagicMock(return_value=[])
+            result = MagicMock()
+            result.scalars = MagicMock(return_value=scalars_mock)
+            result.scalar_one_or_none = MagicMock(return_value=None)
+            return result
         try:
             compiled = stmt.compile()
             params = compiled.params

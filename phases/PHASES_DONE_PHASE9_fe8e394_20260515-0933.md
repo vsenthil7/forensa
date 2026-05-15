@@ -11,7 +11,9 @@
 
 ## TL;DR
 
-Phase 9 ran 25 CPs across 36 commits, taking Forensa from BR scoreboard **6/13 IMPLEMENTED+TESTED** at Phase 8 close to **9/13 IMPLEMENTED+TESTED** at HEAD `fe8e394`. Default-mode pytest suite grew 464 → 878 (+414 tests, +89%). PG-mode suite grew 422 → 904 (+482 tests). Coverage gate held at 100% throughout. The hackathon-submission demo path is end-to-end functional: agent event ingest → policy enforcement → cryptographic Receipt with Ed25519 signature → daily RFC 3161 TSA anchor → JSON-LD + PDF evidence pack with embedded TSA proof → offline `openssl ts -verify` round-trip → live Gemini 2.5 Pro narrative generation with 4-layer prompt-injection defence.
+Phase 9 ran 25 CPs across 36 commits, taking Forensa from BR scoreboard **6/13 IMPLEMENTED+TESTED** at Phase 8 close to **8/13 IMPLEMENTED+TESTED** at HEAD `fe8e394`, then to **9/13 IMPLEMENTED+TESTED** at HEAD `dc62fd0` after the CP9.28 BR-13 M&A export landing on 15 May 10:55. Default-mode pytest suite grew 464 → 878 (+414 tests, +89%) at `fe8e394`, then to 895 at `dc62fd0` (+17 from CP9.28). PG-mode suite grew 422 → 904 (+482 tests). Coverage gate held at 100% throughout. The hackathon-submission demo path is end-to-end functional: agent event ingest → policy enforcement → cryptographic Receipt with Ed25519 signature → daily RFC 3161 TSA anchor → JSON-LD + PDF evidence pack with embedded TSA proof → offline `openssl ts -verify` round-trip → live Gemini 2.5 Pro narrative generation with 4-layer prompt-injection defence → M&A due-diligence bundle export.
+
+**Arithmetic correction note (added 15 May 10:58):** the original prose of this TL;DR said "6/13 → 9/13" but the BR scoreboard table on lines 22-34 of this same doc only listed 8 IMPLEMENTED+TESTED BRs at HEAD `fe8e394` (BR-01, BR-02, BR-03, BR-04, BR-05, BR-06, BR-10, BR-11). The correct Phase-9-close count was 8/13, not 9/13. CP9.28 then flipped BR-13 to make the live count 9/13 at HEAD `dc62fd0`. The original narrative was off by one. The table was always correct; the prose ran ahead of the table by one BR. CP9.28 corrected the prose alongside flipping BR-13, so the BRD's Status column and this doc's TL;DR now agree.
 
 ---
 
@@ -33,7 +35,9 @@ Phase 9 ran 25 CPs across 36 commits, taking Forensa from BR scoreboard **6/13 I
 | BR-12 | Tabletop incident response mode | STUB | STUB (DEFERRED out-of-hackathon) | — |
 | BR-13 | M&A due diligence export | STUB | STUB (DEFERRED out-of-hackathon) | — |
 
-**5 BRs flipped STUB/PARTIAL → IMPLEMENTED+TESTED** in Phase 9. 4 remain STUB (all DEFERRED out-of-hackathon by design). 1 remains PARTIAL with a named destination (BR-09 → CP12.4).
+**6 BRs flipped STUB/PARTIAL → IMPLEMENTED+TESTED** in Phase 9 (BR-02 + BR-04 + BR-05 + BR-06 + BR-10 + BR-11). 4 remain STUB (BR-07 + BR-08 + BR-12 DEFERRED out-of-hackathon by design; BR-13 also STUB at HEAD `fe8e394` but **flipped to IMPLEMENTED+TESTED in CP9.28 at HEAD `dc62fd0`** on 15 May 10:55). 1 remains PARTIAL with a named destination (BR-09 → CP12.4).
+
+**Arithmetic correction note (added 15 May 10:58):** the original line above said "5 BRs flipped" — that was off by one. Counting the table itself: BR-02, BR-04, BR-05, BR-06, BR-10, BR-11 all show a flip-source CP in the rightmost column. That's 6, not 5. CP9.28 corrected this alongside flipping BR-13.
 
 ## CP table
 

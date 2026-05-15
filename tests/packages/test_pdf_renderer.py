@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -11,12 +12,13 @@ from packages.crypto.sign import generate_keypair
 from packages.export.builder import build_evidence_pack
 from packages.export.pdf_renderer import (
     PdfRenderError,
+    _anchor_table,
     _pin_pdf_timestamps,
     _short_hex,
     _truncate,
     render_evidence_pack_pdf,
 )
-from packages.export.schema import EvidencePack
+from packages.export.schema import AnchorEvidence, EvidencePack
 from packages.ledger.receipt_builder import build_receipt
 from packages.policy.bundle_builder import build_bundle
 from packages.policy.lobstertrap import MockLobsterTrapClient
@@ -336,3 +338,102 @@ async def test_footer_present_on_pages() -> None:
     pdf = render_evidence_pack_pdf(pack)
     assert b"verify against root_hash" in pdf
     assert b"Page" in pdf
+
+
+# ---------- anchor block (CP9.23 + NEW-P9.23.pdf-anchor-display) ----------
+
+
+def _anchored_anchor() -> AnchorEvidence:
+    import base64
+
+    return AnchorEvidence(
+        anchor_id=uuid4(),
+        anchor_date=datetime(2026, 5, 13, tzinfo=UTC),
+        status="anchored",
+        root_hash="a" * 64,
+        tsa_identifier="mock-tsa",
+        tsr_bytes_b64=base64.b64encode(
+            b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f"
+        ).decode("ascii"),
+        tsa_signature_b64=base64.b64encode(b"\xff" * 32).decode("ascii"),
+        timestamped_at=datetime(2026, 5, 13, 12, 0, tzinfo=UTC),
+        anchored_at=datetime(2026, 5, 13, 12, 5, tzinfo=UTC),
+    )
+
+
+def _deferred_anchor() -> AnchorEvidence:
+    return AnchorEvidence(
+        anchor_id=uuid4(),
+        anchor_date=datetime(2026, 5, 13, tzinfo=UTC),
+        status="deferred",
+        root_hash=None,
+        tsa_identifier="mock-tsa",
+        tsr_bytes_b64=None,
+        tsa_signature_b64=None,
+        timestamped_at=None,
+        anchored_at=datetime(2026, 5, 13, 12, 5, tzinfo=UTC),
+    )
+
+
+@pytest.mark.asyncio
+async def test_pdf_contains_anchor_section_when_anchor_present() -> None:
+    pairs = await _make_chain(2)
+    pack = build_evidence_pack(
+        tenant_id=_TENANT_A,
+        generated_at=_GEN,
+        scope_start=_NOW,
+        scope_end=_LATER,
+        receipts_with_snapshots=pairs,
+        anchor=_anchored_anchor(),
+    )
+    pdf = render_evidence_pack_pdf(pack)
+    assert pdf.startswith(b"%PDF-")
+    # Anchor section header MUST appear.
+    assert b"RFC 3161 TSA anchor proof" in pdf
+    assert b"openssl ts -verify" in pdf
+    # Anchored row fields surface.
+    assert b"anchored" in pdf
+    assert b"mock-tsa" in pdf
+
+
+@pytest.mark.asyncio
+async def test_pdf_omits_anchor_section_when_no_anchor() -> None:
+    pairs = await _make_chain(2)
+    pack = build_evidence_pack(
+        tenant_id=_TENANT_A,
+        generated_at=_GEN,
+        scope_start=_NOW,
+        scope_end=_LATER,
+        receipts_with_snapshots=pairs,
+        anchor=None,
+    )
+    pdf = render_evidence_pack_pdf(pack)
+    # No anchor in pack -> section header MUST be absent.
+    assert b"RFC 3161 TSA anchor proof" not in pdf
+
+
+@pytest.mark.asyncio
+async def test_pdf_anchor_section_shows_not_anchored_for_deferred_tombstone() -> None:
+    pairs = await _make_chain(1)
+    pack = build_evidence_pack(
+        tenant_id=_TENANT_A,
+        generated_at=_GEN,
+        scope_start=_NOW,
+        scope_end=_LATER,
+        receipts_with_snapshots=pairs,
+        anchor=_deferred_anchor(),
+    )
+    pdf = render_evidence_pack_pdf(pack)
+    # Section appears (regulator must know the day was scheduled) but
+    # signature fields read "not anchored".
+    assert b"RFC 3161 TSA anchor proof" in pdf
+    assert b"deferred" in pdf
+    assert b"not anchored" in pdf
+
+
+def test_anchor_table_returns_none_for_none_anchor() -> None:
+    # Test the helper directly. _anchor_table(pack) returns None when
+    # pack.anchor is None - the caller uses this to omit the section.
+    pack = MagicMock(spec=EvidencePack)
+    pack.anchor = None
+    assert _anchor_table(pack) is None

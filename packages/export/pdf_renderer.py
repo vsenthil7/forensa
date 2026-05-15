@@ -151,6 +151,61 @@ def _receipts_table(pack: EvidencePack) -> Table:
     return table
 
 
+def _anchor_table(pack: EvidencePack) -> Table | None:
+    """Render the TSA anchor proof as a 2-column table.
+
+    Returns None when ``pack.anchor`` is None so the caller can omit the
+    section entirely. When the anchor is a deferred tombstone, the table
+    still surfaces (so a regulator knows the day was scheduled) but the
+    signature fields read 'not anchored'.
+    """
+    a = pack.anchor
+    if a is None:
+        return None
+    if a.status == "anchored":
+        # Show first 12 chars + last 4 chars of each base64 blob so the
+        # table stays readable. The full payload lives in the JSON-LD
+        # form for offline `openssl ts -verify` use.
+        tsr_short = _short_hex(a.tsr_bytes_b64 or "", head=12, tail=4)
+        sig_short = _short_hex(a.tsa_signature_b64 or "", head=12, tail=4)
+        timestamped = a.timestamped_at.isoformat() if a.timestamped_at else "(none)"
+        chain_root = a.root_hash or "(none)"
+    else:
+        tsr_short = "not anchored"
+        sig_short = "not anchored"
+        timestamped = "not anchored"
+        chain_root = "not anchored"
+    rows = [
+        ["Status", a.status],
+        ["Anchor ID", str(a.anchor_id)],
+        ["Anchor date (UTC)", a.anchor_date.date().isoformat()],
+        ["TSA identifier", a.tsa_identifier],
+        ["Chain root at anchor", chain_root],
+        ["TSA witness time", timestamped],
+        ["TSR bytes (base64, abbreviated)", tsr_short],
+        ["TSA signature (base64, abbreviated)", sig_short],
+        ["Anchored at", a.anchored_at.isoformat()],
+    ]
+    table = Table(rows, colWidths=[52 * mm, 120 * mm])
+    table.setStyle(
+        TableStyle(
+            [
+                ("FONT", (0, 0), (-1, -1), "Helvetica", 8),
+                ("FONT", (0, 0), (0, -1), "Helvetica-Bold", 8),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("BOX", (0, 0), (-1, -1), 0.4, colors.black),
+                ("INNERGRID", (0, 0), (-1, -1), 0.2, colors.grey),
+                ("BACKGROUND", (0, 0), (0, -1), colors.lightgrey),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ]
+        )
+    )
+    return table
+
+
 def _activities_table(pack: EvidencePack) -> Table:
     header_row = ["Activity IRI", "Used event", "Used snapshot", "Generated receipt"]
     rows: list[list[str]] = [header_row]
@@ -299,6 +354,21 @@ def render_evidence_pack_pdf(pack: EvidencePack) -> bytes:
         story.append(
             Paragraph("(no activities)", body_style),
         )
+
+    anchor_table = _anchor_table(pack)
+    if anchor_table is not None:
+        story.append(Paragraph("RFC 3161 TSA anchor proof", h2_style))
+        story.append(
+            Paragraph(
+                "Cryptographic timestamp proof binding the chain root to a trusted "
+                "third-party witness. Verify the full TSR DER bytes against the TSA's "
+                "public key using offline tooling (e.g. openssl ts -verify). The values "
+                "below are abbreviated for readability; the JSON-LD form carries the "
+                "full payload.",
+                body_style,
+            )
+        )
+        story.append(anchor_table)
 
     def _on_first_page(canvas: Canvas, doc: SimpleDocTemplate) -> None:
         _footer_callback(canvas, doc)

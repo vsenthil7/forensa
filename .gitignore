@@ -106,6 +106,13 @@ docker-compose.override.yml
 tmp/
 .tmp/
 
+# Local agent scratch — frame extraction, throwaway probes, run logs
+.demo_frames/
+.demo_run.log
+.demo_run.err
+.demo_run.pid
+.probe_*.py
+
 # Forensa: never commit raw evidence packs
 dossiers/
 test-dossiers/

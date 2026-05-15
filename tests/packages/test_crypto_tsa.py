@@ -191,7 +191,7 @@ async def test_mock_client_two_calls_produce_different_timestamps():
 
 
 # ---------------------------------------------------------------------------
-# Rfc3161TimestampClient - skeleton; PRODUCTION-DEFERRED
+# Rfc3161TimestampClient - real RFC 3161 over HTTP
 # ---------------------------------------------------------------------------
 
 
@@ -219,14 +219,300 @@ def test_rfc3161_client_accepts_ca_bundle_path():
     assert c.endpoint_url == "https://tsa.example.com/"
 
 
-@pytest.mark.asyncio
-async def test_rfc3161_client_request_raises_production_deferred_error():
-    """CP9.19 design: any production wire-up to Rfc3161 should FAIL LOUDLY
-    until CP10.x lands. Silent fallback to server-clock is the failure
-    mode we are explicitly preventing."""
+def test_rfc3161_client_identifier_derived_from_hostname():
+    """Default identifier comes from the URL hostname."""
+    c = Rfc3161TimestampClient(endpoint_url="https://freetsa.org/tsr")
+    assert c.identifier == "freetsa.org"
+
+
+def test_rfc3161_client_identifier_override():
+    c = Rfc3161TimestampClient(
+        endpoint_url="https://freetsa.org/tsr",
+        identifier="custom-tsa",
+    )
+    assert c.identifier == "custom-tsa"
+
+
+def test_rfc3161_client_default_timeout():
+    """Default timeout is 30s per DEFAULT_TIMEOUT_SECONDS."""
     c = Rfc3161TimestampClient(endpoint_url="https://tsa.example.com/")
-    with pytest.raises(TimestampClientError, match="PRODUCTION-DEFERRED"):
+    assert c._timeout_seconds == Rfc3161TimestampClient.DEFAULT_TIMEOUT_SECONDS
+
+
+def test_rfc3161_client_custom_timeout():
+    c = Rfc3161TimestampClient(
+        endpoint_url="https://tsa.example.com/",
+        timeout_seconds=5.0,
+    )
+    assert c._timeout_seconds == 5.0
+
+
+@pytest.mark.asyncio
+async def test_rfc3161_client_rejects_short_hash():
+    """Same shape-validation as the mock: 64 lowercase hex required."""
+    c = Rfc3161TimestampClient(endpoint_url="https://tsa.example.com/")
+    with pytest.raises(TimestampClientError, match="64 lowercase hex"):
+        await c.request_timestamp("too-short")
+
+
+@pytest.mark.asyncio
+async def test_rfc3161_client_rejects_uppercase_hash():
+    c = Rfc3161TimestampClient(endpoint_url="https://tsa.example.com/")
+    with pytest.raises(TimestampClientError, match="64 lowercase hex"):
+        await c.request_timestamp("A" * 64)
+
+
+@pytest.mark.asyncio
+async def test_rfc3161_client_maps_oserror_to_client_error(monkeypatch):
+    """Network failure surfaces as TimestampClientError, not bare OSError.
+
+    Callers map TimestampClientError to a "TSA unavailable; retry tomorrow"
+    tombstone in the anchor ledger. Bare OSError would crash the anchor
+    worker. We patch urllib.request.urlopen to raise.
+    """
+    import urllib.request
+
+    def boom(*args, **kwargs):
+        raise OSError("network unreachable")
+
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
+
+    c = Rfc3161TimestampClient(endpoint_url="https://tsa.example.com/")
+    with pytest.raises(TimestampClientError, match="HTTP transport error"):
         await c.request_timestamp(_VALID_HASH)
+
+
+@pytest.mark.asyncio
+async def test_rfc3161_client_maps_non_zero_status_to_client_error(monkeypatch):
+    """A TSR with status != 0 (rejection) surfaces as TimestampClientError.
+
+    We build a real-but-rejection TimeStampResp by mocking decode to return
+    an object with status=2 (rejection). The caller must NOT treat this as
+    success.
+    """
+    import urllib.request
+
+    import rfc3161_client
+
+    class _FakeHttpResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return None
+
+        def read(self):
+            return b"dummy response bytes"
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _FakeHttpResp())
+
+    class _FakeTsResp:
+        status = 2  # rejection
+
+    monkeypatch.setattr(
+        rfc3161_client,
+        "decode_timestamp_response",
+        lambda data: _FakeTsResp(),
+    )
+
+    c = Rfc3161TimestampClient(endpoint_url="https://tsa.example.com/")
+    with pytest.raises(TimestampClientError, match="status=2"):
+        await c.request_timestamp(_VALID_HASH)
+
+
+@pytest.mark.asyncio
+async def test_rfc3161_client_maps_decode_failure_to_client_error(monkeypatch):
+    """Garbage from the TSA surfaces as TimestampClientError, not bare exception."""
+    import urllib.request
+
+    import rfc3161_client
+
+    class _FakeHttpResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return None
+
+        def read(self):
+            return b"not valid DER"
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _FakeHttpResp())
+
+    def _raise(data):
+        raise ValueError("invalid ASN.1 input")
+
+    monkeypatch.setattr(rfc3161_client, "decode_timestamp_response", _raise)
+
+    c = Rfc3161TimestampClient(endpoint_url="https://tsa.example.com/")
+    with pytest.raises(TimestampClientError, match="failed to decode TimeStampResp"):
+        await c.request_timestamp(_VALID_HASH)
+
+
+@pytest.mark.asyncio
+async def test_rfc3161_client_happy_path_with_mocked_tsa(monkeypatch):
+    """Full happy path with mocked HTTP + decode.
+
+    Verifies: ASCII-encoded hex as imprint input, SHA-256 algorithm,
+    POST to endpoint, status=0 success, genTime extracted, tsr_bytes
+    preserved, signature = sha256(tsr_bytes).
+    """
+    import hashlib
+    import urllib.request
+
+    import rfc3161_client
+
+    captured: dict[str, object] = {}
+
+    class _FakeHttpResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return None
+
+        def read(self):
+            return b"FAKE_TSR_DER_BYTES"
+
+    def _fake_urlopen(http_req, timeout=None):
+        captured["url"] = http_req.full_url
+        captured["method"] = http_req.get_method()
+        captured["content_type"] = http_req.headers.get("Content-type")
+        captured["data"] = http_req.data
+        captured["timeout"] = timeout
+        return _FakeHttpResp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+
+    class _FakeTstInfo:
+        gen_time = datetime(2026, 5, 15, 20, 0, 0, tzinfo=UTC)
+
+    class _FakeTsResp:
+        status = 0
+        tst_info = _FakeTstInfo()
+
+    monkeypatch.setattr(rfc3161_client, "decode_timestamp_response", lambda data: _FakeTsResp())
+
+    c = Rfc3161TimestampClient(endpoint_url="https://freetsa.org/tsr", timeout_seconds=10.0)
+    response = await c.request_timestamp(_VALID_HASH)
+
+    # POST went to the right place with the right content-type
+    assert captured["url"] == "https://freetsa.org/tsr"
+    assert captured["method"] == "POST"
+    assert captured["content_type"] == "application/timestamp-query"
+    assert captured["timeout"] == 10.0
+    # The request payload is a non-empty DER blob (we don't assert exact
+    # bytes - that's rfc3161-client's contract not ours - but it must be
+    # non-empty and begin with 0x30 SEQUENCE).
+    assert isinstance(captured["data"], bytes | bytearray)
+    assert len(captured["data"]) > 0  # type: ignore[arg-type]
+    assert captured["data"][0] == 0x30  # type: ignore[index]
+
+    # Response shape
+    assert response.tsa_identifier == "freetsa.org"
+    assert response.hashed_root == _VALID_HASH
+    assert response.tsr_bytes == b"FAKE_TSR_DER_BYTES"
+    assert response.timestamped_at == datetime(2026, 5, 15, 20, 0, 0, tzinfo=UTC)
+    # signature = sha256(tsr_bytes)
+    expected_sig = hashlib.sha256(b"FAKE_TSR_DER_BYTES").digest()
+    assert response.signature == expected_sig
+
+
+@pytest.mark.asyncio
+async def test_rfc3161_client_attaches_utc_to_naive_gen_time(monkeypatch):
+    """If the parser returned a naive datetime, force UTC (RFC 3161 mandates UTC)."""
+    import urllib.request
+
+    import rfc3161_client
+
+    class _FakeHttpResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return None
+
+        def read(self):
+            return b"FAKE"
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _FakeHttpResp())
+
+    class _FakeTstInfo:
+        gen_time = datetime(2026, 5, 15, 20, 0, 0)  # naive!
+
+    class _FakeTsResp:
+        status = 0
+        tst_info = _FakeTstInfo()
+
+    monkeypatch.setattr(rfc3161_client, "decode_timestamp_response", lambda data: _FakeTsResp())
+
+    c = Rfc3161TimestampClient(endpoint_url="https://tsa.example.com/")
+    response = await c.request_timestamp(_VALID_HASH)
+    assert response.timestamped_at.tzinfo == UTC
+
+
+@pytest.mark.asyncio
+async def test_rfc3161_client_rejects_missing_tst_info(monkeypatch):
+    """A TSR with status=0 but no embedded TSTInfo is malformed; surface as error."""
+    import urllib.request
+
+    import rfc3161_client
+
+    class _FakeHttpResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return None
+
+        def read(self):
+            return b"FAKE"
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _FakeHttpResp())
+
+    class _FakeTsResp:
+        status = 0
+        tst_info = None
+
+    monkeypatch.setattr(rfc3161_client, "decode_timestamp_response", lambda data: _FakeTsResp())
+
+    c = Rfc3161TimestampClient(endpoint_url="https://tsa.example.com/")
+    with pytest.raises(TimestampClientError, match="no TSTInfo"):
+        await c.request_timestamp(_VALID_HASH)
+
+
+# ---------------------------------------------------------------------------
+# Rfc3161TimestampClient - LIVE integration tests (opt-in)
+# ---------------------------------------------------------------------------
+# These hit a real public TSA over the internet. Gated on FORENSA_USE_REAL_TSA_TESTS=1
+# so CI doesn't hammer FreeTSA on every commit. Run locally with:
+#   $env:FORENSA_USE_REAL_TSA_TESTS = '1'
+#   poetry run pytest tests/packages/test_crypto_tsa.py -k live -v
+
+
+@pytest.mark.asyncio
+async def test_rfc3161_client_live_freetsa_end_to_end():
+    """LIVE: hit FreeTSA, verify we get real DER + a sensible genTime."""
+    import os
+
+    if os.environ.get("FORENSA_USE_REAL_TSA_TESTS") != "1":
+        pytest.skip("FORENSA_USE_REAL_TSA_TESTS not set; skipping live FreeTSA test")
+
+    c = Rfc3161TimestampClient(endpoint_url="https://freetsa.org/tsr", timeout_seconds=30.0)
+    response = await c.request_timestamp(_VALID_HASH)
+
+    # Real DER starts with 0x30 SEQUENCE
+    assert response.tsr_bytes[0] == 0x30
+    # Real DER is sizeable (FreeTSA's TSRs are 4KB+)
+    assert len(response.tsr_bytes) > 1000
+    # genTime is tz-aware UTC and recent (within last 5 minutes)
+    assert response.timestamped_at.tzinfo == UTC
+    age = (datetime.now(UTC) - response.timestamped_at).total_seconds()
+    assert -60 < age < 300, f"genTime suspiciously old/future: age={age}s"
+    # Identifier defaulted to hostname
+    assert response.tsa_identifier == "freetsa.org"
+    # signature = sha256(tsr_bytes), 32 bytes
+    assert len(response.signature) == 32
 
 
 # ---------------------------------------------------------------------------

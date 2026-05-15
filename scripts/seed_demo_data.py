@@ -10,8 +10,11 @@ tools/demo.sh + tools/demo.ps1 have something real to call against:
   4. Five Receipts chained through the full receipt_builder:
        - 3 on 2026-05-13 (anchored day; demo's verification target)
        - 2 on 2026-05-14 (recent day; un-anchored)
-  5. One TimestampAnchorRow with status='anchored' for 2026-05-13 via
-     MockTimestampClient (deterministic JSON TSR, NOT real RFC 3161 DER).
+  5. One TimestampAnchorRow with status='anchored' for 2026-05-13.
+     By default this uses Rfc3161TimestampClient against FreeTSA
+     (https://freetsa.org/tsr), producing a real RFC 3161 DER TSR
+     bound by the public-internet TSA. Set FORENSA_DEMO_USE_MOCK_TSA=1
+     to fall back to MockTimestampClient for offline / air-gapped runs.
   6. A signed bearer token via mint_hmac_token() so tools/demo.sh can pass
      `Authorization: Bearer $FORENSA_TOKEN` against the running API.
 
@@ -28,9 +31,10 @@ Env vars:
                                 fallback if unset (NOT for production)
 
 Limitations (tracked as NEW-Pxx items, no silent drops):
-    - MockTimestampClient returns deterministic JSON, NOT real RFC 3161 DER.
-      The `openssl ts -verify` step in tools/demo.sh will fail against the
-      mock. Real-TSA seed support is NEW-P11.X.real-tsa-in-seed-script.
+    - By default the seeder hits a live public TSA (FreeTSA); set
+      FORENSA_DEMO_USE_MOCK_TSA=1 for offline runs or when the network
+      is restricted. Mock-mode TSRs are deterministic JSON, NOT real DER,
+      and the demo's `openssl ts -verify` step will fail against them.
     - No console state is seeded.
     - HMAC tokens replace OIDC at CP10.1.
     - On idempotent re-seed when the agent row exists but receipts don't,
@@ -54,7 +58,7 @@ from sqlalchemy import select
 
 from apps.api.auth.token import mint_hmac_token
 from packages.crypto.sign import generate_keypair
-from packages.crypto.tsa import MockTimestampClient
+from packages.crypto.tsa import MockTimestampClient, Rfc3161TimestampClient, TimestampClient
 from packages.ledger.anchor import AnchorAlreadyExistsError, anchor_day
 from packages.ledger.bundle_repository import write_bundle
 from packages.ledger.bundle_workflow import (
@@ -77,6 +81,29 @@ from packages.policy.bundle_builder import build_bundle
 from packages.policy.lobstertrap import MockLobsterTrapClient
 from packages.policy.snapshot import capture_snapshot
 from packages.schema.receipt import Receipt
+
+DEFAULT_TSA_ENDPOINT = "https://freetsa.org/tsr"
+
+
+def _build_timestamp_client() -> TimestampClient:
+    """Build the TSA client per env config. Real RFC 3161 by default.
+
+    Precedence:
+      - FORENSA_DEMO_USE_MOCK_TSA=1 -> MockTimestampClient (offline / CI).
+      - FORENSA_DEMO_TSA_ENDPOINT   -> override the TSA URL (default
+                                       https://freetsa.org/tsr).
+
+    Default behaviour is REAL: the seeder hits the public-internet TSA
+    so the resulting TimestampAnchorRow contains genuine RFC 3161 DER
+    that `openssl ts -verify` can validate against the TSA cert chain.
+    """
+    if os.environ.get("FORENSA_DEMO_USE_MOCK_TSA") == "1":
+        print("  [tsa]    FORENSA_DEMO_USE_MOCK_TSA=1 -> MockTimestampClient")
+        return MockTimestampClient(identifier="mock-tsa://forensa-demo")
+    endpoint = os.environ.get("FORENSA_DEMO_TSA_ENDPOINT", DEFAULT_TSA_ENDPOINT)
+    print(f"  [tsa]    Rfc3161TimestampClient -> {endpoint}")
+    return Rfc3161TimestampClient(endpoint_url=endpoint)
+
 
 DEMO_TENANT_SLUG = "forensa-demo"
 DEMO_TENANT_NAME = "Forensa Demo Tenant"
@@ -353,14 +380,19 @@ async def _build_chain_for_day(
 
 
 async def _anchor_day_if_needed(session, *, tenant_id: UUID, day: datetime) -> None:
-    """Anchor (tenant, day) via MockTimestampClient. Idempotent."""
-    mock_tsa = MockTimestampClient(identifier="mock-tsa://forensa-demo")
+    """Anchor (tenant, day) via the configured TSA. Idempotent.
+
+    By default this calls a live public TSA over HTTP (FreeTSA) to obtain
+    a real RFC 3161 TSR. Set FORENSA_DEMO_USE_MOCK_TSA=1 to fall back to
+    the in-process mock for offline / CI runs.
+    """
+    tsa_client = _build_timestamp_client()
     try:
         result = await anchor_day(
             session,
             tenant_id=tenant_id,
             day=day,
-            timestamp_client=mock_tsa,
+            timestamp_client=tsa_client,
         )
         root_disp = (result.root_hash[:16] + "...") if result.root_hash else "None"
         print(
@@ -433,7 +465,7 @@ async def seed() -> int:
             )
             print(f"  [chain]  day2: {len(day2_receipts)} receipts on {DAY_RECENT.date()}")
 
-        _banner("Step 4: anchor day 1 via MockTimestampClient")
+        _banner("Step 4: anchor day 1 via real RFC 3161 TSA (FreeTSA by default)")
         await _anchor_day_if_needed(session, tenant_id=tenant.id, day=DAY_ANCHORED)
 
     await engine.dispose()

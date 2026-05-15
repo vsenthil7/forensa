@@ -128,14 +128,26 @@ async def write_event_with_receipt(
 async def get_receipt_by_id(
     session: AsyncSession,
     receipt_id: UUID,
+    *,
+    tenant_id: UUID | None = None,
 ) -> tuple[Receipt, UUID] | None:
     """Return (Receipt, policy_snapshot_id) for a receipt id, or None if not found.
 
     The policy_snapshot_id is returned alongside the Receipt because
     recompute_receipt_hash needs it to verify integrity, and Receipt itself
     does not carry that field (only policy_bundle_id).
+
+    CP9.33 / NEW-P10.X.repo-tenant-scoping: optional ``tenant_id`` kwarg.
+    When provided, the SQL gains ``AND tenant_id = :tid`` so a cross-tenant
+    probe can't even reach the row. Backwards compatible: when omitted,
+    behaviour is unchanged. The receipt detail route + evidence pack route
+    + narrative route all know the authenticated tenant_id and should pass
+    it through.
     """
-    stmt = select(ReceiptRow).where(ReceiptRow.id == receipt_id).limit(1)
+    stmt = select(ReceiptRow).where(ReceiptRow.id == receipt_id)
+    if tenant_id is not None:
+        stmt = stmt.where(ReceiptRow.tenant_id == tenant_id)
+    stmt = stmt.limit(1)
     result = await session.execute(stmt)
     row = result.scalar_one_or_none()
     if row is None:

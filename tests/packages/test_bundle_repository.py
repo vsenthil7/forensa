@@ -223,3 +223,54 @@ async def test_list_bundles_query_filters_by_tenant_id():
     stmt = session.execute.call_args[0][0]
     compiled = stmt.compile()
     assert _TENANT_B in compiled.params.values()
+
+
+# ---------------------------------------------------------------------------
+# CP9.33 / NEW-P10.X.repo-tenant-scoping: optional tenant_id kwarg on
+# get_bundle_by_id pushes tenant isolation into the SQL layer.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_bundle_by_id_without_tenant_id_does_not_filter():
+    """Backwards compat: omitting tenant_id keeps the old behaviour
+    (no WHERE tenant_id clause)."""
+    session = _session_returning_scalar_one(None)
+    await get_bundle_by_id(session, uuid4())
+    stmt = session.execute.call_args[0][0]
+    compiled = stmt.compile()
+    # No tenant_id should appear in the bound params (only the bundle id).
+    assert _TENANT_A not in compiled.params.values()
+    assert _TENANT_B not in compiled.params.values()
+
+
+@pytest.mark.asyncio
+async def test_get_bundle_by_id_with_tenant_id_filters_in_sql():
+    """When tenant_id kwarg is provided, the SQL gains a tenant filter."""
+    session = _session_returning_scalar_one(None)
+    await get_bundle_by_id(session, uuid4(), tenant_id=_TENANT_A)
+    stmt = session.execute.call_args[0][0]
+    compiled = stmt.compile()
+    assert _TENANT_A in compiled.params.values()
+
+
+@pytest.mark.asyncio
+async def test_get_bundle_by_id_with_correct_tenant_returns_bundle():
+    """Smoke test: when the row matches the tenant_id filter, the bundle
+    is reconstructed and returned. (The mock doesn't actually filter,
+    but we verify the happy-path mapping still works.)"""
+    bundle = _make_bundle(tenant_id=_TENANT_A)
+    session = _session_returning_scalar_one(_make_row_from_bundle(bundle))
+    found = await get_bundle_by_id(session, bundle.id, tenant_id=_TENANT_A)
+    assert found is not None
+    assert found.tenant_id == _TENANT_A
+    assert found.id == bundle.id
+
+
+@pytest.mark.asyncio
+async def test_get_bundle_by_id_returns_none_when_no_row_matches_tenant_filter():
+    """Cross-tenant probe: SQL filter excludes the row, repo returns None.
+    Simulated by the mock returning None to model the real-DB behaviour."""
+    session = _session_returning_scalar_one(None)
+    found = await get_bundle_by_id(session, uuid4(), tenant_id=_TENANT_B)
+    assert found is None

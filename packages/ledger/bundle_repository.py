@@ -63,6 +63,8 @@ async def write_bundle(session: AsyncSession, bundle: PolicyBundle) -> UUID:
 async def get_bundle_by_id(
     session: AsyncSession,
     bundle_id: UUID,
+    *,
+    tenant_id: UUID | None = None,
 ) -> PolicyBundle | None:
     """Return the ``PolicyBundle`` with this id, or ``None`` if not found.
 
@@ -71,8 +73,20 @@ async def get_bundle_by_id(
     snapshot's ``content_hash`` must equal the bundle's ``content_hash`` for
     a clean replay. Drift between them is the
     ``PolicyBundleHashMismatchError`` case.
+
+    CP9.33 / NEW-P10.X.repo-tenant-scoping: optional ``tenant_id`` kwarg.
+    When provided, the SQL gains ``AND tenant_id = :tid``. This pushes
+    tenant isolation into the SQL layer rather than relying on the route
+    to check ``bundle.tenant_id == expected`` after the fact -- if a route
+    forgets that check, the SQL-level filter still refuses the cross-tenant
+    leak. Backwards compatible: when omitted, behaviour is unchanged.
+    Callers that already know the tenant (the tabletop route, future ones)
+    should pass it through.
     """
-    stmt = select(PolicyBundleRow).where(PolicyBundleRow.id == bundle_id).limit(1)
+    stmt = select(PolicyBundleRow).where(PolicyBundleRow.id == bundle_id)
+    if tenant_id is not None:
+        stmt = stmt.where(PolicyBundleRow.tenant_id == tenant_id)
+    stmt = stmt.limit(1)
     result = await session.execute(stmt)
     row = result.scalar_one_or_none()
     if row is None:

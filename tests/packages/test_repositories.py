@@ -298,3 +298,87 @@ def test_get_latest_receipt_reconstructs_receipt_from_row():
     assert isinstance(result, Receipt)
     assert result.receipt_hash == receipt.receipt_hash
     assert result.sequence == receipt.sequence
+
+
+# ---------- get_receipt_by_id tenant scoping (CP9.33 / NEW-P10.X.repo-tenant-scoping) ----------
+
+
+def test_get_receipt_by_id_without_tenant_id_does_not_filter():
+    """Backwards compat: omitting tenant_id keeps the old behaviour (no
+    WHERE tenant_id clause). The compiled SQL should NOT contain any
+    tenant UUID in its bound params."""
+    from packages.ledger.repositories import get_receipt_by_id
+
+    session = MagicMock(spec=AsyncSession)
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none = MagicMock(return_value=None)
+    session.execute = AsyncMock(return_value=result_mock)
+
+    _run(get_receipt_by_id(session, uuid4()))
+    stmt = session.execute.call_args[0][0]
+    compiled = stmt.compile()
+    assert _TENANT_ID not in compiled.params.values()
+    assert _OTHER_TENANT_ID not in compiled.params.values()
+
+
+def test_get_receipt_by_id_with_tenant_id_filters_in_sql():
+    """When tenant_id kwarg is provided, the SQL gains a tenant filter."""
+    from packages.ledger.repositories import get_receipt_by_id
+
+    session = MagicMock(spec=AsyncSession)
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none = MagicMock(return_value=None)
+    session.execute = AsyncMock(return_value=result_mock)
+
+    _run(get_receipt_by_id(session, uuid4(), tenant_id=_TENANT_ID))
+    stmt = session.execute.call_args[0][0]
+    compiled = stmt.compile()
+    assert _TENANT_ID in compiled.params.values()
+
+
+def test_get_receipt_by_id_returns_none_when_no_row_matches_tenant_filter():
+    """Cross-tenant probe: SQL filter excludes the row, repo returns None.
+    Mock returns None to model real-DB behaviour."""
+    from packages.ledger.repositories import get_receipt_by_id
+
+    session = MagicMock(spec=AsyncSession)
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none = MagicMock(return_value=None)
+    session.execute = AsyncMock(return_value=result_mock)
+
+    found = _run(get_receipt_by_id(session, uuid4(), tenant_id=_OTHER_TENANT_ID))
+    assert found is None
+
+
+def test_get_receipt_by_id_with_correct_tenant_returns_pair():
+    """Smoke test: when the row matches the tenant_id filter, the
+    (Receipt, snapshot_id) pair is returned with full field mapping."""
+    from packages.ledger.repositories import get_receipt_by_id
+
+    _, _, receipt = _make_triple()
+    snapshot_id = uuid4()
+    row = MagicMock(spec=ReceiptRow)
+    row.id = receipt.id
+    row.tenant_id = receipt.tenant_id
+    row.event_id = receipt.event_id
+    row.policy_bundle_id = receipt.policy_bundle_id
+    row.policy_snapshot_id = snapshot_id
+    row.sequence = receipt.sequence
+    row.prev_receipt_hash = receipt.prev_receipt_hash
+    row.payload_hash = receipt.payload_hash
+    row.receipt_hash = receipt.receipt_hash
+    row.signature = receipt.signature
+    row.agent_signature = receipt.agent_signature
+    row.signed_at = receipt.signed_at
+
+    session = MagicMock(spec=AsyncSession)
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none = MagicMock(return_value=row)
+    session.execute = AsyncMock(return_value=result_mock)
+
+    result = _run(get_receipt_by_id(session, receipt.id, tenant_id=_TENANT_ID))
+    assert result is not None
+    found_receipt, found_snapshot_id = result
+    assert isinstance(found_receipt, Receipt)
+    assert found_receipt.receipt_hash == receipt.receipt_hash
+    assert found_snapshot_id == snapshot_id

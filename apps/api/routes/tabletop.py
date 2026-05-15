@@ -70,12 +70,18 @@ async def simulate_tabletop(
             },
         )
 
-    bundle = await get_bundle_by_id(session, scenario.policy_bundle_id)
-    # Tenant-scope the lookup: if the bundle belongs to a different tenant,
-    # surface as 404 (NOT 403) to avoid leaking the existence of a bundle
-    # id across tenant boundaries. NEW-P10.X.repo-tenant-scoping tracks the
-    # broader move of pushing tenant filters into every repository helper.
-    if bundle is None or bundle.tenant_id != scenario.tenant_id:
+    bundle = await get_bundle_by_id(
+        session, scenario.policy_bundle_id, tenant_id=scenario.tenant_id
+    )
+    # CP9.33: tenant scoping is now enforced at the SQL layer via the
+    # `tenant_id` kwarg above. The repo-layer SQL filter `WHERE id = :bid
+    # AND tenant_id = :tid` ensures a cross-tenant probe returns None at
+    # the row level, before any app-layer check. This 404 path now covers
+    # both "no bundle with this id" AND "bundle exists but for a different
+    # tenant" in a single branch. (Previously the route did a post-query
+    # check `bundle.tenant_id != scenario.tenant_id` which was correct but
+    # depended on every future route remembering to add it.)
+    if bundle is None:
         raise HTTPException(
             status_code=404,
             detail={

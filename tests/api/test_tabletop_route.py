@@ -153,14 +153,24 @@ async def test_simulate_404_when_bundle_does_not_exist(app, client) -> None:
 
 @pytest.mark.asyncio
 async def test_simulate_404_when_bundle_belongs_to_other_tenant(app, client) -> None:
-    """Cross-tenant probing returns 404 (not 403) to avoid leaking bundle ids."""
-    other_bundle = build_bundle(tenant_id=_OTHER_TENANT, version="1.0.0", content=_CONTENT)
-    app.dependency_overrides[get_session] = _override_session_returning_bundle(
-        _make_bundle_row(other_bundle)
-    )
+    """Cross-tenant probing returns 404 (not 403) to avoid leaking bundle ids.
+
+    CP9.33: tenant scoping is enforced at the SQL layer via
+    get_bundle_by_id(..., tenant_id=scenario.tenant_id). When the lookup
+    targets a tenant_id that doesn't own the bundle, the SQL filter
+    `WHERE id = :bid AND tenant_id = :tid` returns no row -> the mock
+    here returns None to reflect that real-DB behaviour. (Before CP9.33
+    the route did a post-query check `bundle.tenant_id != scenario.tenant_id`
+    so the test mocked the row as present-but-foreign; that test shape is
+    no longer accurate because the SQL filter intercepts the lookup before
+    any row reaches the route.)
+    """
+    # Session returns None because the SQL filter `tenant_id=_TENANT`
+    # would not match a row owned by _OTHER_TENANT.
+    app.dependency_overrides[get_session] = _override_session_returning_bundle(None)
     response = await client.post(
         "/v1/tabletop/simulate",
-        json=_scenario_body(bundle_id=other_bundle.id),
+        json=_scenario_body(bundle_id=uuid4()),
     )
     assert response.status_code == 404
     body = response.json()

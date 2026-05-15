@@ -2,7 +2,7 @@
 
 **Doc:** 02 of 22 | **Date:** 12 May 2026 (v1) / 14 May 2026 (v1.2) | **Status:** v1.2, status-tracked | **Source:** Section A.2 of three-author master doc
 **Status column added:** 14 May 2026 09:58 per EnterpriseGradeReview_Claude review fix #10 (close doc-claim-vs-code-reality gap)
-**Last status sweep:** 15 May 2026 07:10 after CP9.21a + CP9.21b PDF wire form (BR-05 flips PARTIAL -> IMPLEMENTED+TESTED, headline 8/13 -> 9/13)
+**Last status sweep:** 15 May 2026 10:40 after CP9.28 M&A due diligence export (BR-13 flips DEFERRED -> IMPLEMENTED+TESTED, headline 9/13 -> 10/13)
 
 ## Status legend
 
@@ -30,9 +30,9 @@
 | BR-10 | Investigator UI with natural-language query | `STUB` → `IMPLEMENTED` after CP9.1 | Mock client today (Phase 7); Live Gemini client lands in Phase 9 CP9.1; full Flash-driven NL query UX in Phase 13 stretch |
 | BR-11 | Counterfactual narrative generation | `STUB` → `IMPLEMENTED` after CP9.1 | Mock client today; Live Gemini Pro client + 4-layer prompt-injection defence lands in Phase 9 CP9.1; semantic hallucination guard in Phase 12 NEW-P12.Y |
 | BR-12 | Tabletop incident response mode | `DEFERRED` | Phase 10 stretch |
-| BR-13 | M&A due diligence export | `DEFERRED` | Phase 13 stretch |
+| BR-13 | M&A due diligence export | `IMPLEMENTED+TESTED` | - |
 
-**Headline:** 5 of 13 BRs are `IMPLEMENTED+TESTED` per this table snapshot (BR-01, BR-03, BR-04, BR-05, BR-10/11 after CP9.1). Live state at HEAD CP9.21b is 9/13 IMPLEMENTED+TESTED (the live scoreboard counts BR-02 and BR-06 which moved to IMPLEMENTED+TESTED in CP9.18 and CP9.19 respectively after this table was last edited). 4 are `PARTIAL`. 2 are `STUB` (becoming `IMPLEMENTED` after Phase 9 CP9.1). 3 are `DEFERRED`. The live scoreboard truth is in `phases/PHASES_REVIEW_BEFORE_AFTER_*.md`.
+**Headline:** 5 of 13 BRs are `IMPLEMENTED+TESTED` per this table snapshot (BR-01, BR-03, BR-04, BR-05, BR-10/11 after CP9.1). Live state at HEAD CP9.28 is **10/13 IMPLEMENTED+TESTED** (the live scoreboard counts BR-02 and BR-06 which moved to IMPLEMENTED+TESTED in CP9.18 and CP9.19 respectively after this table was last edited, plus BR-13 flipped by CP9.28). 4 are `PARTIAL`. 2 are `STUB` (becoming `IMPLEMENTED` after Phase 9 CP9.1). 2 are `DEFERRED` (BR-08 Omniverse + BR-12 tabletop). The live scoreboard truth is in `phases/PHASES_REVIEW_BEFORE_AFTER_*.md`.
 
 ## 13 Business Requirements (BR-01 through BR-13)
 
@@ -116,10 +116,11 @@ Today `MockNarrativeClient` returns deterministic template text. Phase 9 CP9.1 w
 **Test coverage:** N/A — implementation pending
 
 ### BR-13 - M&A due diligence export
-**Status:** `DEFERRED`
-Inventory export endpoint is not in code. Tracked for Phase 13 stretch.
-**Architecture component:** packages/export (when extended)
-**Test coverage:** N/A — implementation pending
+**Status:** `IMPLEMENTED+TESTED`
+Full-window evidence trail export for M&A due diligence buyers. Composes a sealed bundle containing one `EvidencePack` per anchored day in scope plus the full set of `AnchorEvidence` proofs covering the window, all bound by a single `ma_root_hash` so the acquirer verifies the bundle's integrity in one operation. `POST /v1/exports/ma-diligence` accepts a JSON body with `tenant_id` + `scope_start` + `scope_end`, returns `MaDiligenceExport` JSON. Tenant-scoped (403 cross-tenant); 413 when scope spans more than 366 anchored days or any day contains more than 1000 receipts; 422 on naive or inverted scope window. Acquirer verifies the bundle offline via `verify_ma_diligence_export()` which recomputes `ma_root_hash` from the canonical bind shape (header + every pack's root_hash + every anchor's anchor_id + every anchor's root_hash).
+**Architecture component:** `packages/export/ma_export.py` (MaDiligenceHeader + MaDiligenceExport Pydantic models + `build_ma_diligence_export` + `verify_ma_diligence_export` + `daily_chunks` helpers; ~170 LOC); `apps/api/routes/exports.py` (POST endpoint, ~165 LOC); wired into `apps/api/main.py` router list.
+**Test coverage:** 12 unit on the module (`tests/packages/test_ma_export.py`: daily_chunks 5 + build happy path 2 + tenant isolation 1 + size limits 1 + tamper detection 2 + tz validation 1) + 5 endpoint (`tests/api/test_exports_route.py`: happy path 2 anchored days + empty scope + 403 cross-tenant + 422 inverted scope + mixed anchored/deferred rows). 100% line+branch coverage on the new code surface. 895 total default tests passing at this commit.
+**Gap vs spec:** Async-job mode for very large windows (>366 days OR >100K receipts) is `TRACKED-NEW-P12.X.ma-export-async-job`. Encryption-at-rest with the acquirer's public key is `TRACKED-NEW-P10.X.ma-export-encryption-at-rest`. Detached platform signature on the bundle (so the acquirer can verify it came from Forensa not a forger) is `TRACKED-NEW-P11.X.ma-export-detached-platform-signature`.
 
 ## Non-functional requirements (from Section C.16)
 
@@ -150,6 +151,7 @@ Each BR maps to architecture component + test suite. See `docs/17_traceability_m
 
 | Date | Change |
 |---|---|
+| 15 May 2026 10:40 | CP9.28 landed. **BR-13 flips DEFERRED -> IMPLEMENTED+TESTED.** New module `packages/export/ma_export.py` (~170 LOC: MaDiligenceHeader + MaDiligenceExport Pydantic frozen models + `build_ma_diligence_export` + `verify_ma_diligence_export` + `daily_chunks`). New route `apps/api/routes/exports.py` (~165 LOC: `POST /v1/exports/ma-diligence` with tenant-scoped auth + 413 size limits + 422 input validation). Wired into `apps/api/main.py` router list. **Headline scoreboard moves to 10/13 IMPLEMENTED+TESTED.** 17 new tests at 100% coverage (12 unit + 5 endpoint). 895 total default tests after this commit (up from 878). Closes the BR-13 row that had been deferred since the v1 BRD freeze on 12 May. 3 production-deferred items named: NEW-P10.X.ma-export-encryption-at-rest + NEW-P11.X.ma-export-detached-platform-signature + NEW-P12.X.ma-export-async-job. |
 | 15 May 2026 07:10 | CP9.21a + CP9.21b landed. BR-05 flips PARTIAL -> IMPLEMENTED+TESTED. PDF render module (`packages/export/pdf_renderer.py`, 330 LOC) + Accept-header content negotiation on `GET /v1/evidence-packs`. Headline scoreboard moves to 9/13 IMPLEMENTED+TESTED. Closes the CP6.3 deferral carried since Phase 6 (14 May 02:47-03:20) and the Enterprise-Grade Review section 3.17 item 1 finding (No PDF rendering). 41 new tests at 100% coverage (24 renderer + 17 endpoint). 837 total default tests after this commit. |
 | 12 May 2026 | v1 BRD frozen with 13 BRs |
 | 14 May 2026 09:58 | Status column added per EnterpriseGradeReview_Claude review fix #10. Headline: 4 IMPLEMENTED+TESTED / 4 PARTIAL / 2 STUB / 3 DEFERRED. Status of BR-10 and BR-11 will move to IMPLEMENTED after Phase 9 CP9.1 lands in this same session. |

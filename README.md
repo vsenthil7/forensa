@@ -1,5 +1,12 @@
 # Forensa
 
+[![CI](https://github.com/vsenthil7/forensa/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/vsenthil7/forensa/actions/workflows/ci.yml)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3120/)
+[![Coverage 100%25](https://img.shields.io/badge/coverage-100%25-brightgreen.svg)](#testing)
+[![Tests 921](https://img.shields.io/badge/tests-921%20passed-brightgreen.svg)](#testing)
+[![BRs 10%2F13](https://img.shields.io/badge/BRs-10%2F13%20implemented-brightgreen.svg)](docs/02_brd/BRD.md)
+[![License MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 > **The black box flight recorder for enterprise AI agents.**
 
 Tamper-evident, multi-party-bound, policy-aware event ledger that produces legally admissible records of every AI agent action — for regulators, auditors, and litigation.
@@ -36,16 +43,16 @@ The math agrees. Without Forensa, that proof chain doesn't exist. With Forensa, 
 
 ## Status at submission
 
-**Phase 9 closed.** HEAD: `7bbca8e` on `main`. 4 days before TechEx submission (Monday 19 May 2026).
+**Phase 9 closed + Phase 9-stretch landed.** HEAD: `53c3207` on `main`. 4 days before TechEx submission (Monday 19 May 2026).
 
 | Metric | Value |
 |---|---:|
-| BR scoreboard | **9 / 13 IMPLEMENTED+TESTED** (4 STUB DEFERRED, 0 PARTIAL outside roadmap) |
-| Default-mode tests | **878 passed**, 100% line + branch coverage gate held |
-| PG-mode integration tests | **904 passed** (878 default + 26 PG-only) |
-| Lint / format / types | `ruff check` + `ruff format --check` + `mypy --strict` on 52 source files: all clean |
+| BR scoreboard | **10 / 13 IMPLEMENTED+TESTED** (2 DEFERRED, 1 PARTIAL with named CP12.4 destination) |
+| Default-mode tests | **921 passed**, 100% line + branch coverage gate held |
+| PG-mode integration tests | **947 total** (921 default + 26 PG-only) |
+| Lint / format / types | `ruff check` + `ruff format --check` + `mypy --strict` on 56 source files: all clean |
 | Security scan | `bandit` + `pip-audit`: clean |
-| CPs landed in Phase 9 | **25 across 36 commits**; full audit trail in `phases/PHASES_DONE_PHASE9_*.md` |
+| CPs landed in Phase 9 + stretch | **28 across 39 commits**; full audit trail in `phases/PHASES_DONE_PHASE9_*.md` |
 
 ### BR scoreboard
 
@@ -62,8 +69,8 @@ The math agrees. Without Forensa, that proof chain doesn't exist. With Forensa, 
 | BR-09 | 10K events/sec sustained, 100K peak (Kafka path) | 🟡 PARTIAL → CP12.4 |
 | BR-10 | Gemini 2.5 Pro narrative generation | ✅ IMPLEMENTED+TESTED |
 | BR-11 | Counterfactual narrative with 4-layer prompt-injection defence | ✅ IMPLEMENTED+TESTED |
-| BR-12 | Tabletop incident response mode | ⏸ DEFERRED out-of-hackathon |
-| BR-13 | M&A due diligence export | ⏸ DEFERRED out-of-hackathon |
+| BR-12 | Tabletop incident response mode | ✅ IMPLEMENTED+TESTED (CP9.29) |
+| BR-13 | M&A due diligence export | ✅ IMPLEMENTED+TESTED (CP9.28) |
 
 Full BRD with Status column at `docs/02_brd/BRD.md`.
 
@@ -174,12 +181,15 @@ docker compose up -d forensa-pg
 # Run migrations
 poetry run alembic upgrade head
 
-# Default-mode tests (no DB; 878 tests, 100% coverage gate)
+# Default-mode tests (no DB; 921 tests, 100% coverage gate)
 poetry run pytest -q
 
-# PG-mode integration tests (904 tests including DB triggers)
+# PG-mode integration tests (947 total; needs FORENSA_TEST_DB_URL)
 $env:FORENSA_TEST_DB_URL = 'postgresql+asyncpg://forensa:forensa@localhost:5433/forensa'
 poetry run pytest -q --no-cov
+
+# Seed demo data (CP9.30) and grab env vars for tools/demo.sh
+poetry run python scripts/seed_demo_data.py
 
 # Run the API
 poetry run forensa-api
@@ -233,7 +243,7 @@ forensa/
 │   └── narrative/                  ← client (mock) + live_client (Gemini) + prompt (3-anchor bind)
 │
 ├── alembic/                        ← migrations (8 heads)
-├── tests/                          ← 878 default + 26 PG-only = 904 total
+├── tests/                          ← 921 default + 26 PG-only = 947 total
 │   ├── packages/                   ← unit tests
 │   ├── api/                        ← endpoint tests (mocked sessions)
 │   └── integration/                ← PG-only tests (triggers, RLS-ready)
@@ -280,13 +290,13 @@ See `docs/README.md` for the full 22-doc index.
 
 100% line + branch coverage on every commit. CI runs three coverage-gated test chains in parallel; a single failure blocks merge to `main`.
 
-- **`pytest`** — 878 unit + integration + property-based tests (`hypothesis`). Coverage gate `--cov-fail-under=100`.
+- **`pytest`** — 921 unit + integration + property-based tests (`hypothesis`). Coverage gate `--cov-fail-under=100`.
 - **`pytest` (PG-mode)** — 26 additional PG-only integration tests proving DB triggers, partial unique indexes, alembic migration runners. Coverage skipped (`--no-cov`) since PG-mode coverage targets differ.
 - **`vitest`** — TypeScript unit + component tests for the console.
 - **`Playwright`** — full-browser e2e tests against live FastAPI + Next.js dev servers.
 - **`Locust`** (gated; weekly) — load tests proving BR-09 throughput targets.
 
-All four chains green at HEAD `7bbca8e`.
+All four chains green at HEAD `53c3207`.
 
 ---
 
@@ -318,6 +328,14 @@ Full plan at `phases/ROADMAP_PHASE9_AND_ENTERPRISE_20260514_0823.md`. Top 5 item
 5. **CP12.4** — Kafka ingest queue + async COPY-batched writer (BR-09 throughput)
 
 Total Phase 10–13 estimate: ~52 team-weeks for 2 engineers; +8,670 production LOC, +12,540 test LOC, +483 tests.
+
+### Remaining DEFERRED business requirements
+
+| BR | Why deferred | Destination |
+|---|---|---|
+| BR-07 LangGraph multi-agent provenance | LangGraph + multi-agent DAG capture is multi-day; not hackathon-window | Phase 12 |
+| BR-08 Omniverse physical-action replay | NVIDIA Isaac Sim integration is multi-day | Phase 11 |
+| BR-09 PARTIAL — Kafka throughput | In-process throughput shipped + measured; Kafka ingest path is multi-week | CP12.4 |
 
 ---
 

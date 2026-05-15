@@ -382,3 +382,108 @@ class TimestampAnchorRow(Base):
             " deferred rows on the next run."
         ),
     )
+
+
+class MaExportJobRow(Base):
+    """CP9.43 / IP #8 NEW-P12.X.ma-export-async-job.
+
+    Background-job tracking row for very large M&A export windows. When a
+    caller POSTs to /v1/exports/ma-diligence/jobs, a new row is created
+    with ``status='pending'``. A worker (today: an asyncio task scheduled
+    on the request handler; future: a Celery / Arq / EventBridge worker)
+    picks it up, transitions to ``running``, performs the export, and
+    writes either ``status='completed'`` + ``result_export`` or
+    ``status='failed'`` + ``result_error``.
+
+    The bundle itself lives in ``result_export`` as the full serialised
+    MaDiligenceExport JSON (or a CipherEnvelope JSON when encryption was
+    requested) so the GET-by-id endpoint can return it without
+    re-running the export.
+
+    Append-only after the terminal state. Once status moves to
+    ``completed`` or ``failed`` the row is immutable. The application
+    layer enforces this; production should also add a database trigger.
+
+    Status state machine (forward-only):
+        pending -> running -> completed
+                          \\-> failed
+        pending -> failed  (a startup failure before work begins)
+
+    Why not reuse PolicyBundleApprovalRow's pattern of one row per
+    transition: M&A export status is a job's CURRENT state, not its
+    audit history. Three status mutations per job vs ~20 per bundle
+    workflow; the row-per-transition pattern would be over-engineered
+    for this scale.
+    """
+
+    __tablename__ = "ma_export_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'running', 'completed', 'failed')",
+            name="ck_ma_export_jobs_status",
+        ),
+        Index("ix_ma_export_jobs_tenant_requested", "tenant_id", "requested_at"),
+        Index("ix_ma_export_jobs_status", "status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    tenant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("tenants.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    requested_by_agent_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="RESTRICT"),
+        nullable=True,
+        comment=(
+            "Agent under which the job was POSTed (for audit). Nullable for"
+            " jobs scheduled by system processes."
+        ),
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+
+    # Job parameters: snapshot of the original request so the row is
+    # self-describing without joining other tables.
+    scope_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    scope_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    encrypt_for_pubkey_b64: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        comment=(
+            "Optional acquirer X25519 pubkey (base64). When set, the worker"
+            " encrypts the result before writing it to result_export."
+        ),
+    )
+    platform_sign_key_id: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+        comment=(
+            "Optional Forensa platform key id (CP9.34). When set, the worker"
+            " platform-signs the export before writing to result_export."
+        ),
+    )
+
+    # Lifecycle timestamps.
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Outcome: exactly one of (result_export, result_error) is populated
+    # once status is terminal. Both NULL while pending or running.
+    result_export: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+        comment=(
+            "MaDiligenceExport JSON (or CipherEnvelope wrapping it when"
+            " encrypt_for_pubkey_b64 was set). Populated iff status='completed'."
+        ),
+    )
+    result_error: Mapped[str | None] = mapped_column(
+        String(2048),
+        nullable=True,
+        comment=(
+            "Error message. Populated iff status='failed'. Bounded to 2048"
+            " chars so a runaway exception traceback can't fill the row."
+        ),
+    )

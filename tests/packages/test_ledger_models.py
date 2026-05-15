@@ -8,6 +8,7 @@ from packages.ledger.models import (
     AgentRow,
     Base,
     EventRow,
+    MaExportJobRow,
     PolicyBundleApprovalRow,
     PolicyBundleRow,
     PolicySnapshotRow,
@@ -28,6 +29,7 @@ def test_all_tables_registered():
         "events",
         "receipts",
         "timestamp_anchors",  # CP9.19 - BR-06 RFC 3161 TSA anchoring
+        "ma_export_jobs",  # CP9.43 - IP #8 async M&A export jobs
     }
 
 
@@ -218,7 +220,7 @@ def test_tenant_agents_relationship():
 def test_base_is_declarative():
     """Base must be a DeclarativeBase subclass; sanity ping on metadata presence."""
     assert Base.metadata is not None
-    assert len(Base.metadata.tables) == 8  # CP9.19 added timestamp_anchors
+    assert len(Base.metadata.tables) == 9  # CP9.43 added ma_export_jobs
 
 
 def test_timestamp_anchor_columns_and_constraints():
@@ -253,3 +255,42 @@ def test_timestamp_anchor_columns_and_constraints():
     # status and anchored_at are NOT nullable.
     assert TimestampAnchorRow.__table__.columns["status"].nullable is False
     assert TimestampAnchorRow.__table__.columns["anchored_at"].nullable is False
+
+
+def test_ma_export_job_columns_and_constraints():
+    """CP9.43 / IP #8: new ma_export_jobs table."""
+    cols = {c.name for c in MaExportJobRow.__table__.columns}
+    assert cols == {
+        "id",
+        "tenant_id",
+        "requested_by_agent_id",
+        "status",
+        "scope_start",
+        "scope_end",
+        "encrypt_for_pubkey_b64",
+        "platform_sign_key_id",
+        "requested_at",
+        "started_at",
+        "completed_at",
+        "result_export",
+        "result_error",
+    }
+    constraint_names = {c.name for c in MaExportJobRow.__table__.constraints if c.name}
+    assert "ck_ma_export_jobs_status" in constraint_names
+    idx_names = {ix.name for ix in MaExportJobRow.__table__.indexes}
+    assert "ix_ma_export_jobs_tenant_requested" in idx_names
+    assert "ix_ma_export_jobs_status" in idx_names
+    fks = {fk.target_fullname for fk in MaExportJobRow.__table__.foreign_keys}
+    assert fks == {"tenants.id", "agents.id"}
+    # Lifecycle nullability.
+    assert MaExportJobRow.__table__.columns["started_at"].nullable is True
+    assert MaExportJobRow.__table__.columns["completed_at"].nullable is True
+    assert MaExportJobRow.__table__.columns["result_export"].nullable is True
+    assert MaExportJobRow.__table__.columns["result_error"].nullable is True
+    assert MaExportJobRow.__table__.columns["requested_by_agent_id"].nullable is True
+    # Required at creation.
+    assert MaExportJobRow.__table__.columns["tenant_id"].nullable is False
+    assert MaExportJobRow.__table__.columns["status"].nullable is False
+    assert MaExportJobRow.__table__.columns["scope_start"].nullable is False
+    assert MaExportJobRow.__table__.columns["scope_end"].nullable is False
+    assert MaExportJobRow.__table__.columns["requested_at"].nullable is False

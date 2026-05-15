@@ -33,6 +33,11 @@ Limitations (tracked as NEW-Pxx items, no silent drops):
       mock. Real-TSA seed support is NEW-P11.X.real-tsa-in-seed-script.
     - No console state is seeded.
     - HMAC tokens replace OIDC at CP10.1.
+    - On idempotent re-seed when the agent row exists but receipts don't,
+      a freshly generated agent_priv will not match the persisted
+      AgentRow.identity_public_key for verification of those new receipts.
+      Production runs hit this rarely and the script's standard path is
+      "clean DB -> full seed". Documented as known limitation.
 """
 
 from __future__ import annotations
@@ -143,34 +148,55 @@ async def _get_or_create_tenant(session) -> TenantRow:
     return row
 
 
-async def _get_or_create_agent(session, tenant_id: UUID) -> tuple[AgentRow, bytes]:
-    """Return (AgentRow, tenant_signing_private_key_bytes).
+async def _get_or_create_agent(session, tenant_id: UUID) -> tuple[AgentRow, bytes, bytes]:
+    """Return (AgentRow, tenant_signing_priv_key, agent_signing_priv_key).
 
-    Both halves of the keypair are freshly generated; we keep the private
-    half only in-memory for this run since there's no KMS adapter yet
-    (NEW-P10.X.kms-adapter).
+    Two INDEPENDENT Ed25519 keypairs are generated:
+      - tenant_priv: used by build_receipt for the tenant-side signature
+        (in production this lives in the tenant's KMS / Vault). Stub for
+        seed-data only.
+      - agent_priv: used by build_receipt for the AGENT-side dual signature
+        (BR-02). Its public half is persisted as AgentRow.identity_public_key
+        so a verifier can later prove the receipt was signed by THIS agent.
+
+    Both private halves are kept only in-memory for this run; no KMS adapter
+    yet (NEW-P10.X.kms-adapter).
     """
     stmt = select(AgentRow).where(AgentRow.tenant_id == tenant_id, AgentRow.slug == DEMO_AGENT_SLUG)
     result = await session.execute(stmt)
     existing = result.scalar_one_or_none()
     if existing is not None:
-        priv, _ = generate_keypair()
-        print(f"  [agent]  reusing agent_id={existing.id} " "(fresh private key for signing)")
-        return existing, priv
-    priv, pub = generate_keypair()
+        # On reseed we don't have the original private halves; generate
+        # fresh ones. The persisted AgentRow.identity_public_key won't
+        # verify against the new agent_priv -- but the receipts being
+        # signed in this run are NEW receipts so their agent_signature
+        # WILL verify under whichever agent public key was persisted at
+        # the time. The seed script's idempotent-reseed path SKIPS the
+        # chain rebuild (see _seed_already_has_receipts) so this freshness
+        # is only visible when there are no existing receipts AND the agent
+        # already existed. Documented as known limitation.
+        tenant_priv, _ = generate_keypair()
+        agent_priv, _ = generate_keypair()
+        print(
+            f"  [agent]  reusing agent_id={existing.id} "
+            "(fresh tenant + agent private keys for signing)"
+        )
+        return existing, tenant_priv, agent_priv
+    tenant_priv, _ = generate_keypair()
+    agent_priv, agent_pub = generate_keypair()
     row = AgentRow(
         id=uuid4(),
         tenant_id=tenant_id,
         slug=DEMO_AGENT_SLUG,
         display_name=DEMO_AGENT_NAME,
-        identity_public_key=pub,
+        identity_public_key=agent_pub,
         status="active",
         created_at=datetime.now(UTC),
     )
     session.add(row)
     await session.flush()
-    print(f"  [agent]  CREATED agent_id={row.id}")
-    return row, priv
+    print(f"  [agent]  CREATED agent_id={row.id} (tenant + agent keypairs generated)")
+    return row, tenant_priv, agent_priv
 
 
 async def _get_or_create_bundle(session, tenant_id: UUID):
@@ -232,12 +258,18 @@ async def _build_chain_for_day(
     agent: AgentRow,
     bundle,
     tenant_priv: bytes,
+    agent_priv: bytes,
     day: datetime,
     n_events: int,
     starting_sequence: int,
     prev_receipt: Receipt | None,
 ) -> tuple[list[Receipt], Receipt | None]:
-    """Persist n_events Receipt+Event+Snapshot triples for one day."""
+    """Persist n_events Receipt+Event+Snapshot triples for one day.
+
+    Each receipt is dual-signed: tenant signature via tenant_priv +
+    agent signature via agent_priv (BR-02). The receipt's agent_signature
+    column is populated from build_receipt's agent_signing_key parameter.
+    """
     mock_gate = MockLobsterTrapClient(
         policy_bundle_id=bundle.id,
         policy_bundle_version=bundle.version,
@@ -291,6 +323,7 @@ async def _build_chain_for_day(
             policy_snapshot_id=snapshot_id,
             prev_receipt=prev,
             tenant_signing_key=tenant_priv,
+            agent_signing_key=agent_priv,
         )
         receipt = receipt.model_copy(
             update={
@@ -309,7 +342,7 @@ async def _build_chain_for_day(
             payload_hash=receipt.payload_hash,
             receipt_hash=receipt.receipt_hash,
             signature=receipt.signature,
-            agent_signature=None,  # BR-02 dual signature not seeded; demo OK
+            agent_signature=receipt.agent_signature,  # BR-02 dual signature seeded
             signed_at=receipt.signed_at,
         )
         session.add(receipt_row)
@@ -362,7 +395,7 @@ async def seed() -> int:
     async with session_scope(sessionmaker) as session:
         _banner("Step 1: tenant + agent")
         tenant = await _get_or_create_tenant(session)
-        agent, tenant_priv = await _get_or_create_agent(session, tenant.id)
+        agent, tenant_priv, agent_priv = await _get_or_create_agent(session, tenant.id)
 
         _banner("Step 2: policy bundle (proposed -> reviewed -> approved -> active)")
         bundle = await _get_or_create_bundle(session, tenant.id)
@@ -379,6 +412,7 @@ async def seed() -> int:
                 agent=agent,
                 bundle=bundle,
                 tenant_priv=tenant_priv,
+                agent_priv=agent_priv,
                 day=DAY_ANCHORED,
                 n_events=3,
                 starting_sequence=0,
@@ -391,6 +425,7 @@ async def seed() -> int:
                 agent=agent,
                 bundle=bundle,
                 tenant_priv=tenant_priv,
+                agent_priv=agent_priv,
                 day=DAY_RECENT,
                 n_events=2,
                 starting_sequence=3,

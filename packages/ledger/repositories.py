@@ -371,5 +371,67 @@ async def get_latest_receipt_for_tenant(
     )
 
 
+async def list_event_payloads_for_tenant_window(
+    session: AsyncSession,
+    tenant_id: UUID,
+    *,
+    occurred_after: datetime,
+    occurred_before: datetime,
+    limit: int,
+) -> list[tuple[str, dict[str, object]]]:
+    """List (label, payload) tuples for tabletop replay (CP9.40 / IP #11).
+
+    READ-ONLY helper. Selects events for ``tenant_id`` whose ``occurred_at``
+    falls inclusively inside ``[occurred_after, occurred_before]``, ordered
+    by ``occurred_at ASC`` (chronological), capped at ``limit`` rows.
+    Returns a list of ``(label, payload)`` tuples shaped to feed directly
+    into ``packages.policy.tabletop.build_scenario_from_payloads``.
+
+    The label is deterministic: ``"event_<uuid>"`` so two calls with the
+    same window produce the same labels in the same order. The payload is
+    the raw JSONB ``payload`` column unmodified.
+
+    Tenant scoping is enforced at the SQL layer via ``WHERE tenant_id =
+    :tid`` -- same pattern as CP9.33. The ``ix_events_tenant_occurred``
+    composite index makes the ``(tenant_id, occurred_at)`` range scan a
+    cheap index seek.
+
+    Parameters
+    ----------
+    session : AsyncSession
+        Open SQLAlchemy session. Caller owns the transaction.
+    tenant_id : UUID
+        Tenant whose events to list.
+    occurred_after : datetime
+        Inclusive lower bound on ``occurred_at``. Must be tz-aware (the
+        route layer validates).
+    occurred_before : datetime
+        Inclusive upper bound on ``occurred_at``.
+    limit : int
+        Maximum rows to return. The route layer caps this at
+        ``_MAX_REPLAY_PAYLOADS`` (1000 today, matches TabletopScenario
+        bounds).
+
+    Returns
+    -------
+    list[tuple[str, dict]]
+        ``(label, payload)`` pairs in chronological order. Empty list if
+        the window contains no events for this tenant.
+    """
+    stmt = (
+        select(EventRow.id, EventRow.payload)
+        .where(
+            EventRow.tenant_id == tenant_id,
+            EventRow.occurred_at >= occurred_after,
+            EventRow.occurred_at <= occurred_before,
+        )
+        .order_by(EventRow.occurred_at.asc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    rows = result.all()
+    return [(f"event_{row.id}", row.payload) for row in rows]
+
+
 # Suppress unused-import warning for datetime in __all__ helpers
 _ = datetime, UTC

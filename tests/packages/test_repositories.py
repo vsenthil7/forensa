@@ -382,3 +382,158 @@ def test_get_receipt_by_id_with_correct_tenant_returns_pair():
     assert isinstance(found_receipt, Receipt)
     assert found_receipt.receipt_hash == receipt.receipt_hash
     assert found_snapshot_id == snapshot_id
+
+
+# ---------- list_event_payloads_for_tenant_window (CP9.40 / IP #11) ----------
+#
+# READ-ONLY repo helper for the tabletop replay-window route. Mocks
+# session.execute().all() returning a list of (id, payload) row tuples
+# and asserts the helper labels and shapes them correctly.
+
+
+def _mock_session_returning_event_rows(rows: list[tuple[UUID, dict]]) -> MagicMock:
+    """Build a MagicMock AsyncSession whose execute().all() returns ``rows``.
+
+    The new repo helper uses ``select(EventRow.id, EventRow.payload)`` which
+    returns Row-like objects accessed by attribute; we mimic that with a
+    SimpleNamespace-style mock per row exposing ``.id`` and ``.payload``.
+    """
+    row_objs = []
+    for event_id, payload in rows:
+        r = MagicMock()
+        r.id = event_id
+        r.payload = payload
+        row_objs.append(r)
+    result_mock = MagicMock()
+    result_mock.all = MagicMock(return_value=row_objs)
+    session = MagicMock(spec=AsyncSession)
+    session.execute = AsyncMock(return_value=result_mock)
+    return session
+
+
+def test_list_event_payloads_returns_empty_when_no_rows_match():
+    from packages.ledger.repositories import list_event_payloads_for_tenant_window
+
+    session = _mock_session_returning_event_rows([])
+    result = _run(
+        list_event_payloads_for_tenant_window(
+            session,
+            _TENANT_ID,
+            occurred_after=datetime(2026, 5, 1, tzinfo=UTC),
+            occurred_before=datetime(2026, 5, 14, tzinfo=UTC),
+            limit=100,
+        )
+    )
+    assert result == []
+
+
+def test_list_event_payloads_returns_labelled_tuples():
+    """Each row -> ("event_<uuid>", payload)."""
+    from packages.ledger.repositories import list_event_payloads_for_tenant_window
+
+    eid1 = UUID("11111111-1111-1111-1111-111111111111")
+    eid2 = UUID("22222222-2222-2222-2222-222222222222")
+    rows = [
+        (eid1, {"kind": "ok"}),
+        (eid2, {"kind": "deny_kind"}),
+    ]
+    session = _mock_session_returning_event_rows(rows)
+    result = _run(
+        list_event_payloads_for_tenant_window(
+            session,
+            _TENANT_ID,
+            occurred_after=datetime(2026, 5, 1, tzinfo=UTC),
+            occurred_before=datetime(2026, 5, 14, tzinfo=UTC),
+            limit=100,
+        )
+    )
+    assert result == [
+        (f"event_{eid1}", {"kind": "ok"}),
+        (f"event_{eid2}", {"kind": "deny_kind"}),
+    ]
+
+
+def test_list_event_payloads_filters_by_tenant_id_in_sql():
+    """The compiled SQL must contain the tenant_id bound param so the
+    SELECT physically excludes cross-tenant rows."""
+    from packages.ledger.repositories import list_event_payloads_for_tenant_window
+
+    session = _mock_session_returning_event_rows([])
+    _run(
+        list_event_payloads_for_tenant_window(
+            session,
+            _TENANT_ID,
+            occurred_after=datetime(2026, 5, 1, tzinfo=UTC),
+            occurred_before=datetime(2026, 5, 14, tzinfo=UTC),
+            limit=100,
+        )
+    )
+    stmt = session.execute.call_args[0][0]
+    compiled = stmt.compile()
+    assert _TENANT_ID in compiled.params.values()
+
+
+def test_list_event_payloads_filters_by_occurred_at_window_in_sql():
+    """Both window endpoints must appear in the compiled bound params."""
+    from packages.ledger.repositories import list_event_payloads_for_tenant_window
+
+    after = datetime(2026, 5, 1, tzinfo=UTC)
+    before = datetime(2026, 5, 14, tzinfo=UTC)
+    session = _mock_session_returning_event_rows([])
+    _run(
+        list_event_payloads_for_tenant_window(
+            session,
+            _TENANT_ID,
+            occurred_after=after,
+            occurred_before=before,
+            limit=100,
+        )
+    )
+    stmt = session.execute.call_args[0][0]
+    compiled = stmt.compile()
+    bound_values = list(compiled.params.values())
+    assert after in bound_values
+    assert before in bound_values
+
+
+def test_list_event_payloads_applies_limit():
+    """The compiled SQL must contain a LIMIT clause matching the kwarg."""
+    from packages.ledger.repositories import list_event_payloads_for_tenant_window
+
+    session = _mock_session_returning_event_rows([])
+    _run(
+        list_event_payloads_for_tenant_window(
+            session,
+            _TENANT_ID,
+            occurred_after=datetime(2026, 5, 1, tzinfo=UTC),
+            occurred_before=datetime(2026, 5, 14, tzinfo=UTC),
+            limit=42,
+        )
+    )
+    stmt = session.execute.call_args[0][0]
+    sql = str(stmt.compile())
+    # asyncpg dialect renders LIMIT as part of the SELECT; case-insensitive check.
+    assert "LIMIT" in sql.upper()
+
+
+def test_list_event_payloads_preserves_input_order_from_db():
+    """The helper does NOT re-sort; whatever the SELECT returned is what
+    callers see. The SELECT itself orders ASC by occurred_at, but at the
+    mock-test level we only verify pass-through of input ordering."""
+    from packages.ledger.repositories import list_event_payloads_for_tenant_window
+
+    eids = [UUID(int=i) for i in range(1, 6)]
+    rows = [(eid, {"i": i}) for i, eid in enumerate(eids, 1)]
+    session = _mock_session_returning_event_rows(rows)
+    result = _run(
+        list_event_payloads_for_tenant_window(
+            session,
+            _TENANT_ID,
+            occurred_after=datetime(2026, 5, 1, tzinfo=UTC),
+            occurred_before=datetime(2026, 5, 14, tzinfo=UTC),
+            limit=100,
+        )
+    )
+    # Labels reflect input order; payloads carry the i marker.
+    assert [r[1]["i"] for r in result] == [1, 2, 3, 4, 5]
+    assert [r[0] for r in result] == [f"event_{eid}" for eid in eids]

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { apiFetch } from "@/lib/apiFetch";
 
 export interface ReceiptListItem {
   id: string;
@@ -36,7 +37,7 @@ const DEFAULT_URL =
   /* v8 ignore next */
   process.env.NEXT_PUBLIC_FORENSA_API_URL ?? "http://localhost:8000";
 
-export function ReceiptList({ tenantId, apiUrl, fetcher = fetch, limit = 50 }: ReceiptListProps) {
+export function ReceiptList({ tenantId, apiUrl, fetcher = apiFetch, limit = 50 }: ReceiptListProps) {
   const [state, setState] = useState<LoadState>("loading");
   const [items, setItems] = useState<ReceiptListItem[]>([]);
   const [errorMsg, setErrorMsg] = useState<string>("");

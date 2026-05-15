@@ -115,6 +115,10 @@ sample-evidence/*.json.signed
 # Claude FILE BACKUP RULE artefacts (local-only, never committed)
 _backup/
 
+# Claude operating-rule artefacts (local-only, never committed):
+# Rule 7 context log entries live here. Working notes, not deliverables.
+.context_log/
+
 # Forensa demo video recordings (large binaries; local-only)
 # Only the TOP-LEVEL `demo/` folder is for recordings. The leading
 # slash anchors the pattern so apps/console/tests-e2e/demo/ (which

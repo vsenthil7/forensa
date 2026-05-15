@@ -16,6 +16,10 @@
 #   FORENSA_API_URL   optional, defaults to http://127.0.0.1:8000 (Playwright boots uvicorn)
 
 $ErrorActionPreference = 'Stop'
+# Ensure poetry is on PATH (Windows pip-installs to %APPDATA%\Python\PythonXY\Scripts)
+if (-not (Get-Command poetry -ErrorAction SilentlyContinue)) {
+    $env:PATH = "$env:APPDATA\Python\Python314\Scripts;$env:PATH"
+}
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Split-Path -Parent (Split-Path -Parent $here)
 $demoDir = Join-Path $projectRoot 'demo'
@@ -70,8 +74,14 @@ try {
     # Default HMAC secret derives deterministically from the demo slug.
     $env:FORENSA_HMAC_SECRET = '666f72656e73612d64656d6f666f72656e73612d64656d6f666f72656e73612d'
     $env:FORENSA_HMAC_TENANT_ID = $env:FORENSA_TENANT_ID
+    # Next.js Console env vars. NEXT_PUBLIC_* vars are inlined into the
+    # client bundle at build/dev time so the browser-side fetcher in
+    # apps/console/src/lib/apiFetch.ts can send the Authorization header.
+    $env:NEXT_PUBLIC_FORENSA_API_URL = 'http://localhost:8000'
+    $env:NEXT_PUBLIC_FORENSA_TOKEN = $env:FORENSA_TOKEN
+    $env:NEXT_PUBLIC_FORENSA_DEMO_TENANT_ID = $env:FORENSA_TENANT_ID
     Write-Host "  tenant_id: $($env:FORENSA_TENANT_ID)"
-    Write-Host '  token + auth env wired'
+    Write-Host '  token + auth env wired (FastAPI + Console)'
 } finally { Pop-Location }
 
 # 3) Run the playwright spec in DEMO mode

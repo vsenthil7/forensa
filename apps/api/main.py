@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -111,6 +112,31 @@ def create_app() -> FastAPI:
         version=__version__,
         default_response_class=ORJSONResponse,
         lifespan=_lifespan,
+    )
+
+    # CORS for the Next.js Console (apps/console/) running at localhost:3000
+    # in development. Production deployments override the allow_origins list
+    # via FORENSA_CORS_ORIGINS (comma-separated). For the captioned demo the
+    # default works because both the API and Console run on localhost.
+    cors_origins_env = os.environ.get("FORENSA_CORS_ORIGINS")
+    if cors_origins_env:
+        allow_origins = [o.strip() for o in cors_origins_env.split(",") if o.strip()]
+    else:
+        allow_origins = [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allow_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-Forensa-Request-Id"],
+        expose_headers=[
+            "X-Forensa-Event-Id",
+            "X-Forensa-Receipt-Id",
+            "X-Forensa-Root-Hash",
+        ],
     )
 
     @app.get("/healthz", status_code=status.HTTP_200_OK)

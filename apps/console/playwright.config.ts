@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig, devices } from '@playwright/test';
 
 const BACKEND_PORT = 8000;
+const FRONTEND_PORT = 3000;
 
 /**
  * Build the uvicorn command for the Forensa API.
@@ -90,7 +91,7 @@ export default defineConfig({
         ? { width: 1440, height: 900 }
         : { width: 1280, height: 800 },
     video: process.env.DEMO === '1' ? 'on' : 'retain-on-failure',
-    launchOptions: process.env.DEMO === '1' ? { slowMo: 800 } : {},
+    launchOptions: process.env.DEMO === '1' ? { slowMo: 400 } : {},
   },
 
   projects: [
@@ -110,6 +111,11 @@ export default defineConfig({
   // missing. The spec does NOT auto-seed because seeding involves
   // a fresh database TRUNCATE and we don't want playwright to
   // wipe a dev's working state silently.
+  //
+  // The captioned demo spec drives the Next.js Console UI which
+  // calls the FastAPI in the browser. So both servers must be up.
+  // The Next.js dev server is the second entry; Playwright waits
+  // on BOTH URLs before starting tests.
   webServer: [
     {
       command: buildUvicornCommand(),
@@ -117,6 +123,15 @@ export default defineConfig({
       url: `http://127.0.0.1:${BACKEND_PORT}/healthz`,
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    },
+    {
+      command: 'npm run dev',
+      cwd: __dirname,
+      url: `http://127.0.0.1:${FRONTEND_PORT}`,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
       stdout: 'pipe',
       stderr: 'pipe',
     },

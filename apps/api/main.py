@@ -8,6 +8,7 @@ from fastapi import FastAPI, status
 from fastapi.responses import ORJSONResponse
 
 from apps.api.narrative_selector import get_selection
+from apps.api.routes import anchors as anchors_routes
 from apps.api.routes import events as events_routes
 from apps.api.routes import evidence as evidence_routes
 from apps.api.routes import narratives as narratives_routes
@@ -66,6 +67,7 @@ def create_app() -> FastAPI:
     app.include_router(receipts_routes.router)
     app.include_router(evidence_routes.router)
     app.include_router(narratives_routes.router)
+    app.include_router(anchors_routes.router)
 
     return app
 

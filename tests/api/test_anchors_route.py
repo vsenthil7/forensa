@@ -250,3 +250,117 @@ async def test_list_anchors_rejects_negative_offset(app, client) -> None:
     response = await client.get(f"/v1/anchors?tenant_id={_TENANT_ID}&offset=-1")
     assert response.status_code == 422
     app.dependency_overrides.clear()
+
+
+# ---------- GET /v1/anchors/{anchor_id} (NEW-P9.22.anchor-detail-endpoint) ----------
+
+
+def _override_session_with_single_row(row: object | None):
+    """Override get_session with a mock returning a single row (or None) for
+    scalar_one_or_none().
+    """
+
+    async def _execute(stmt):
+        result = MagicMock()
+        result.scalar_one_or_none = MagicMock(return_value=row)
+        return result
+
+    session = MagicMock()
+    session.execute = AsyncMock(side_effect=_execute)
+
+    async def _override():
+        return session
+
+    return _override
+
+
+@pytest.mark.asyncio
+async def test_get_anchor_detail_anchored_returns_full_json_body(app, client) -> None:
+    row = _make_anchor_row(anchor_date=datetime(2026, 5, 13, tzinfo=UTC))
+    app.dependency_overrides[get_session] = _override_session_with_single_row(row)
+    response = await client.get(f"/v1/anchors/{row.id}")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["id"] == str(row.id)
+    assert body["tenant_id"] == str(_TENANT_ID)
+    assert body["status"] == "anchored"
+    assert body["root_hash"] == "a" * 64
+    assert body["tsa_identifier"] == "mock-tsa"
+    assert body["tsr_bytes_b64"] is not None
+    assert body["tsa_signature_b64"] is not None
+    assert body["timestamped_at"] is not None
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_anchor_detail_deferred_returns_nulls_in_signature_fields(app, client) -> None:
+    row = _make_anchor_row(anchor_date=datetime(2026, 5, 13, tzinfo=UTC), status="deferred")
+    app.dependency_overrides[get_session] = _override_session_with_single_row(row)
+    response = await client.get(f"/v1/anchors/{row.id}")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "deferred"
+    assert body["root_hash"] is None
+    assert body["tsr_bytes_b64"] is None
+    assert body["tsa_signature_b64"] is None
+    assert body["timestamped_at"] is None
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_anchor_detail_404_when_not_found(app, client) -> None:
+    app.dependency_overrides[get_session] = _override_session_with_single_row(None)
+    bogus = uuid4()
+    response = await client.get(f"/v1/anchors/{bogus}")
+    assert response.status_code == 404
+    body = response.json()
+    assert body["detail"]["error"] == "anchor_not_found"
+    assert body["detail"]["anchor_id"] == str(bogus)
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_anchor_detail_403_when_cross_tenant(app, client) -> None:
+    other_tenant = UUID("99999999-aaaa-bbbb-cccc-dddddddddddd")
+    row = _make_anchor_row(anchor_date=datetime(2026, 5, 13, tzinfo=UTC), tenant_id=other_tenant)
+    app.dependency_overrides[get_session] = _override_session_with_single_row(row)
+    response = await client.get(f"/v1/anchors/{row.id}")
+    assert response.status_code == 403
+    body = response.json()
+    assert body["detail"]["error"] == "tenant_mismatch"
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_anchor_detail_raw_tsr_returns_der_bytes(app, client) -> None:
+    row = _make_anchor_row(anchor_date=datetime(2026, 5, 13, tzinfo=UTC))
+    app.dependency_overrides[get_session] = _override_session_with_single_row(row)
+    response = await client.get(
+        f"/v1/anchors/{row.id}",
+        headers={"Accept": "application/timestamp-reply"},
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/timestamp-reply"
+    # Raw DER body equals the row's tsr_bytes.
+    assert response.content == b"\x00\x01\x02"
+    # Cross-check header carries the JSON form's root_hash for offline verify.
+    assert response.headers["x-forensa-anchor-root-hash"] == "a" * 64
+    # Filename for direct save-and-pipe-to-openssl-ts-verify workflow.
+    assert f'filename="anchor-{row.id}.tsr"' in response.headers["content-disposition"]
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_anchor_detail_raw_tsr_406_on_deferred(app, client) -> None:
+    # Asking for raw DER on a deferred-tombstone row is 406 Not Acceptable -
+    # there are no TSR bytes to ship.
+    row = _make_anchor_row(anchor_date=datetime(2026, 5, 13, tzinfo=UTC), status="deferred")
+    app.dependency_overrides[get_session] = _override_session_with_single_row(row)
+    response = await client.get(
+        f"/v1/anchors/{row.id}",
+        headers={"Accept": "application/timestamp-reply"},
+    )
+    assert response.status_code == 406
+    body = response.json()
+    assert body["detail"]["error"] == "no_tsr_bytes"
+    app.dependency_overrides.clear()

@@ -16,7 +16,8 @@ import base64
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +29,21 @@ from packages.ledger.models import TimestampAnchorRow
 router = APIRouter(prefix="/v1", tags=["anchors"])
 
 _MAX_LIMIT = 200
+_TSR_MEDIA_TYPE = "application/timestamp-reply"
+
+
+def _wants_raw_tsr(accept: str | None) -> bool:
+    """True iff the Accept header asks for the raw RFC 3161 TSR DER bytes.
+
+    Conservative match: the header must literally contain the substring
+    ``application/timestamp-reply``. Wildcards (``*/*``,
+    ``application/*``) intentionally do NOT trigger the raw-DER path
+    because the JSON form is the default machine-readable shape and the
+    raw-DER path is meant for direct piping into ``openssl ts -verify``.
+    """
+    if not accept:
+        return False
+    return _TSR_MEDIA_TYPE in accept.lower()
 
 
 class AnchorListItem(BaseModel):
@@ -136,3 +152,95 @@ async def list_anchors(
     rows = list(result.scalars().all())
     items = [_to_item(r) for r in rows]
     return AnchorListResponse(tenant_id=tenant_id, items=items, count=len(items))
+
+
+@router.get(
+    "/anchors/{anchor_id}",
+    status_code=status.HTTP_200_OK,
+    response_model=AnchorListItem,
+    summary="Get a single TSA anchor with full TSR bytes for offline openssl ts -verify",
+    responses={
+        200: {
+            "description": (
+                "Anchor detail. JSON body by default; raw DER if "
+                "Accept: application/timestamp-reply."
+            ),
+            "content": {
+                "application/json": {},
+                "application/timestamp-reply": {},
+            },
+        },
+        401: {"description": "Authorization header missing or token invalid/expired"},
+        403: {"description": "Anchor belongs to a different tenant"},
+        404: {"description": "Anchor not found"},
+        406: {
+            "description": (
+                "Raw-DER form requested but the anchor is deferred (no tsr_bytes available)"
+            )
+        },
+    },
+)
+async def get_anchor_detail(
+    anchor_id: UUID,
+    principal: Principal = Depends(get_principal),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    accept: str | None = Header(default=None),
+) -> AnchorListItem | Response:
+    """Return a single TimestampAnchorRow by id.
+
+    Two wire forms via content negotiation:
+      * ``Accept: application/json`` (default): full AnchorListItem JSON
+        body with base64-encoded tsr_bytes_b64 + tsa_signature_b64 so an
+        offline verifier can base64-decode and run ``openssl ts -verify``.
+      * ``Accept: application/timestamp-reply``: raw RFC 3161 TSR DER
+        bytes as binary body, suitable for direct piping into
+        ``openssl ts -verify``. Only succeeds for anchored rows; deferred
+        rows return 406 because there are no TSR bytes to ship.
+
+    Authz: rows are tenant-scoped. A 404 hides the existence of anchors
+    that belong to other tenants. A 403 fires when the row exists in the
+    DB but belongs to a tenant other than the principal's - this case is
+    distinguishable from 404 for honest API behaviour (the row exists,
+    the caller just cannot see it).
+    """
+    stmt = select(TimestampAnchorRow).where(TimestampAnchorRow.id == anchor_id)
+    result = await session.execute(stmt)
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "anchor_not_found", "anchor_id": str(anchor_id)},
+        )
+    if row.tenant_id != principal.tenant_id:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "tenant_mismatch",
+                "reason": "anchor belongs to a different tenant",
+            },
+        )
+
+    if _wants_raw_tsr(accept):
+        if row.tsr_bytes is None:
+            raise HTTPException(
+                status_code=406,
+                detail={
+                    "error": "no_tsr_bytes",
+                    "reason": (
+                        "raw RFC 3161 TSR bytes are only available for status='anchored' rows;"
+                        " this row is deferred"
+                    ),
+                },
+            )
+        return Response(
+            content=row.tsr_bytes,
+            media_type=_TSR_MEDIA_TYPE,
+            headers={
+                "Content-Disposition": f'attachment; filename="anchor-{anchor_id}.tsr"',
+                # X-Forensa-Anchor-Root-Hash lets a verifier cross-check the
+                # raw TSR against the JSON form's root_hash without a 2nd call.
+                "X-Forensa-Anchor-Root-Hash": row.root_hash or "",
+            },
+        )
+
+    return _to_item(row)

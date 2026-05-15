@@ -23,7 +23,9 @@ from packages.policy.tabletop import (
     TabletopError,
     TabletopResult,
     TabletopScenario,
+    build_scenario_from_payloads,
     diff_tabletop_results,
+    replay_payloads_as_scenario,
     simulate_scenario,
 )
 
@@ -516,3 +518,199 @@ def test_diff_entry_and_report_are_frozen() -> None:
         report.entries[0].label = "changed"  # type: ignore[misc]
     with pytest.raises(ValueError):
         report.match_count = 99  # type: ignore[misc]
+
+
+# ---------- CP9.39 / NEW-P12.X.tabletop-replay-real-events (pure-transform half) ----------
+#
+# build_scenario_from_payloads is a pure transform: turn (label, payload)
+# tuples into a TabletopScenario. replay_payloads_as_scenario is the thin
+# async wrapper that simulates the constructed scenario. The CP9.40 route
+# layer will fetch real event payloads from the ledger and feed them in.
+# These tests cover the pure transform's validation + the wrapper's
+# behaviour, NOT the eventual ledger-read path.
+
+
+def test_build_scenario_from_payloads_happy_path() -> None:
+    bundle = _bundle()
+    payloads = [
+        ("event-1", {"kind": "ok"}),
+        ("event-2", {"kind": "deny_kind"}),
+        ("event-3", {"kind": "escalate_kind"}),
+    ]
+    scenario = build_scenario_from_payloads(
+        name="replay-week-21",
+        tenant_id=_TENANT,
+        policy_bundle_id=bundle.id,
+        labelled_payloads=payloads,
+    )
+    assert isinstance(scenario, TabletopScenario)
+    assert scenario.name == "replay-week-21"
+    assert scenario.tenant_id == _TENANT
+    assert scenario.policy_bundle_id == bundle.id
+    assert len(scenario.actions) == 3
+    assert [a.label for a in scenario.actions] == ["event-1", "event-2", "event-3"]
+    assert scenario.actions[1].action == {"kind": "deny_kind"}
+
+
+def test_build_scenario_preserves_payload_order() -> None:
+    """Replaying real events in chronological order matters; the transform
+    must not reorder."""
+    bundle = _bundle()
+    payloads = [(f"event-{i:03d}", {"kind": "ok", "i": i}) for i in range(10)]
+    scenario = build_scenario_from_payloads(
+        name="order-check",
+        tenant_id=_TENANT,
+        policy_bundle_id=bundle.id,
+        labelled_payloads=payloads,
+    )
+    expected_labels = [f"event-{i:03d}" for i in range(10)]
+    assert [a.label for a in scenario.actions] == expected_labels
+
+
+def test_build_scenario_rejects_empty_payload_list() -> None:
+    bundle = _bundle()
+    with pytest.raises(TabletopError, match="at least one"):
+        build_scenario_from_payloads(
+            name="empty",
+            tenant_id=_TENANT,
+            policy_bundle_id=bundle.id,
+            labelled_payloads=[],
+        )
+
+
+def test_build_scenario_rejects_too_many_payloads() -> None:
+    bundle = _bundle()
+    too_many = [(f"e-{i}", {"kind": "ok"}) for i in range(1001)]
+    with pytest.raises(TabletopError, match="exceeds maximum 1000"):
+        build_scenario_from_payloads(
+            name="too-big",
+            tenant_id=_TENANT,
+            policy_bundle_id=bundle.id,
+            labelled_payloads=too_many,
+        )
+
+
+def test_build_scenario_rejects_duplicate_labels() -> None:
+    bundle = _bundle()
+    with pytest.raises(TabletopError, match="duplicate label"):
+        build_scenario_from_payloads(
+            name="dup",
+            tenant_id=_TENANT,
+            policy_bundle_id=bundle.id,
+            labelled_payloads=[
+                ("dup", {"kind": "ok"}),
+                ("dup", {"kind": "deny_kind"}),
+            ],
+        )
+
+
+def test_build_scenario_propagates_action_spec_validation_for_empty_label() -> None:
+    """TabletopActionSpec.label has min_length=1; an empty label bubbles up
+    as a Pydantic ValidationError, which the route layer maps to 422."""
+    bundle = _bundle()
+    with pytest.raises(ValueError):
+        build_scenario_from_payloads(
+            name="bad-label",
+            tenant_id=_TENANT,
+            policy_bundle_id=bundle.id,
+            labelled_payloads=[("", {"kind": "ok"})],
+        )
+
+
+def test_build_scenario_at_exactly_1000_payloads_is_allowed() -> None:
+    """Boundary check: _MAX_REPLAY_PAYLOADS is inclusive at 1000."""
+    bundle = _bundle()
+    exactly_max = [(f"e-{i:04d}", {"kind": "ok"}) for i in range(1000)]
+    scenario = build_scenario_from_payloads(
+        name="max-size",
+        tenant_id=_TENANT,
+        policy_bundle_id=bundle.id,
+        labelled_payloads=exactly_max,
+    )
+    assert len(scenario.actions) == 1000
+
+
+@pytest.mark.asyncio
+async def test_replay_payloads_as_scenario_end_to_end() -> None:
+    """The thin async wrapper combines build + simulate; verify the result."""
+    bundle = _bundle()
+    client = _client(bundle)
+    payloads = [
+        ("replay-1", {"kind": "ok"}),
+        ("replay-2", {"kind": "deny_kind"}),
+        ("replay-3", {"kind": "escalate_kind"}),
+    ]
+    result = await replay_payloads_as_scenario(
+        name="end-to-end",
+        tenant_id=_TENANT,
+        policy_bundle_id=bundle.id,
+        labelled_payloads=payloads,
+        bundle=bundle,
+        enforcement_client=client,
+    )
+    assert isinstance(result, TabletopResult)
+    assert result.scenario.name == "end-to-end"
+    assert result.summary.total == 3
+    assert result.summary.allow == 1
+    assert result.summary.deny == 1
+    assert result.summary.escalate == 1
+    # Labels round-trip from payloads through scenario into action_results.
+    labels = [ar.label for ar in result.action_results]
+    assert labels == ["replay-1", "replay-2", "replay-3"]
+
+
+@pytest.mark.asyncio
+async def test_replay_payloads_propagates_tenant_mismatch_via_simulate() -> None:
+    """replay_payloads_as_scenario calls simulate_scenario which enforces
+    bundle.tenant_id == scenario.tenant_id. If the caller passes a bundle
+    from a different tenant, the simulate layer raises TabletopError."""
+    other_bundle = _bundle(tenant=_OTHER_TENANT)
+    client = _client(other_bundle)
+    with pytest.raises(TabletopError, match="tenant_id"):
+        await replay_payloads_as_scenario(
+            name="cross-tenant",
+            tenant_id=_TENANT,
+            policy_bundle_id=other_bundle.id,
+            labelled_payloads=[("e", {"kind": "ok"})],
+            bundle=other_bundle,
+            enforcement_client=client,
+        )
+
+
+@pytest.mark.asyncio
+async def test_replay_then_diff_against_inline_scenario() -> None:
+    """Realistic flow: replay real events under proposed bundle, run an
+    inline scenario under active bundle, diff the two results.
+
+    This is the operational shape CP9.40 + the diff CP enable: take the
+    same events, evaluate under two different bundles, see ONLY the
+    decisions that changed."""
+    bundle = _bundle()
+    client = _client(bundle)
+    payloads = [
+        ("e-1", {"kind": "ok"}),
+        ("e-2", {"kind": "deny_kind"}),
+    ]
+    replayed = await replay_payloads_as_scenario(
+        name="replay",
+        tenant_id=_TENANT,
+        policy_bundle_id=bundle.id,
+        labelled_payloads=payloads,
+        bundle=bundle,
+        enforcement_client=client,
+    )
+    # Run the same actions inline as the "actual" side. Same bundle ->
+    # same decisions -> diff should report zero drifts.
+    inline_scenario = TabletopScenario(
+        name="actual",
+        tenant_id=_TENANT,
+        policy_bundle_id=bundle.id,
+        actions=[TabletopActionSpec(label=lbl, action=p) for lbl, p in payloads],
+    )
+    actual = await simulate_scenario(
+        scenario=inline_scenario, bundle=bundle, enforcement_client=client
+    )
+    report = diff_tabletop_results(replayed, actual)
+    assert report.drift_count == 0
+    assert report.match_count == 2
+    assert report.entries == []

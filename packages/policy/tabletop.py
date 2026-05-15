@@ -41,6 +41,12 @@ PRODUCTION-DEFERRED:
     under the live bundle, surfacing only the diffs. See
     ``diff_tabletop_results`` + ``TabletopDiffEntry`` + ``TabletopDiffReport``
     at the bottom of this module.
+  - (CP9.39 partial close) NEW-P12.X.tabletop-replay-real-events: the
+    pure transform ``build_scenario_from_payloads`` + the thin async
+    helper ``replay_payloads_as_scenario`` below let a caller turn any
+    list of (label, payload) tuples into a TabletopScenario and replay
+    it. CP9.40 will add the read-only event-window repository helper +
+    route that fetches real historical events and feeds them in.
 """
 
 from __future__ import annotations
@@ -403,3 +409,133 @@ def _index_by_label(
             )
         out[row.label] = row
     return out
+
+
+# ---------------------------------------------------------------------------
+# CP9.39 / NEW-P12.X.tabletop-replay-real-events (pure-transform half)
+# ---------------------------------------------------------------------------
+#
+# The full feature is: "replay a window of real historical events against a
+# candidate policy bundle to see what would have happened differently."
+# That feature has two halves:
+#
+#   (1) Read-only fetch of real event payloads for a tenant + time window.
+#       This needs a new repository helper + a route. Scoped to CP9.40.
+#
+#   (2) Pure transform: take a list of (label, payload) tuples and build
+#       a TabletopScenario that simulate_scenario() can already consume.
+#       This is what CP9.39 provides. No DB, no async, no I/O. Same shape
+#       as the diff_tabletop_results helper above.
+#
+# Why split: CP9.40's repository helper has its own test surface (real
+# Postgres assertions, time-window edge cases). Keeping the pure transform
+# in its own CP means we can ship the data-shape work today and the I/O
+# work next, exactly per the "modularise (CP)" directive. Each CP has its
+# own commit, own test surface, own rollback boundary.
+
+_MAX_REPLAY_PAYLOADS = 1000  # matches TabletopScenario.actions max_length
+
+
+def build_scenario_from_payloads(
+    *,
+    name: str,
+    tenant_id: UUID,
+    policy_bundle_id: UUID,
+    labelled_payloads: list[tuple[str, dict[str, Any]]],
+) -> TabletopScenario:
+    """Build a TabletopScenario from raw (label, payload) tuples.
+
+    Pure data-shape transform. No I/O. The intended caller is the CP9.40
+    `replay_events_window` route, which fetches real event payloads from
+    the ledger, attaches deterministic labels (e.g. "event_<uuid>"), and
+    feeds them in. But any caller wanting to construct a TabletopScenario
+    from non-inline payloads (CSV import, JSON-Lines bulk, etc.) can use
+    this same shape.
+
+    Parameters
+    ----------
+    name
+        Scenario name. Same constraints as TabletopScenario.name (1-256).
+    tenant_id
+        Tenant authoring the scenario. Same as TabletopScenario.tenant_id.
+    policy_bundle_id
+        Bundle to simulate against. Same as TabletopScenario.policy_bundle_id.
+    labelled_payloads
+        List of (label, payload_dict) tuples. Each label must be unique
+        (1-128 chars, validated by TabletopActionSpec). Each payload is
+        the dict the enforcement client's evaluate() will receive as its
+        `action` argument. List length must be 1-1000 (matches
+        TabletopScenario.actions bounds).
+
+    Returns
+    -------
+    TabletopScenario
+        A scenario ready to feed to simulate_scenario().
+
+    Raises
+    ------
+    TabletopError
+        If labelled_payloads is empty, exceeds _MAX_REPLAY_PAYLOADS, or
+        contains duplicate labels.
+    """
+    if not labelled_payloads:
+        raise TabletopError("labelled_payloads must contain at least one (label, payload) tuple")
+    if len(labelled_payloads) > _MAX_REPLAY_PAYLOADS:
+        raise TabletopError(
+            f"labelled_payloads exceeds maximum {_MAX_REPLAY_PAYLOADS} "
+            f"(got {len(labelled_payloads)}); narrow the time window"
+        )
+
+    seen_labels: set[str] = set()
+    action_specs: list[TabletopActionSpec] = []
+    for label, payload in labelled_payloads:
+        if label in seen_labels:
+            raise TabletopError(
+                f"duplicate label {label!r} -- each replayed event needs a unique label"
+            )
+        seen_labels.add(label)
+        # TabletopActionSpec enforces label 1-128 chars + frozen + extra=forbid;
+        # validation errors bubble up as pydantic.ValidationError which the
+        # route layer maps to 422.
+        action_specs.append(TabletopActionSpec(label=label, action=payload))
+
+    return TabletopScenario(
+        name=name,
+        tenant_id=tenant_id,
+        policy_bundle_id=policy_bundle_id,
+        actions=action_specs,
+    )
+
+
+async def replay_payloads_as_scenario(
+    *,
+    name: str,
+    tenant_id: UUID,
+    policy_bundle_id: UUID,
+    labelled_payloads: list[tuple[str, dict[str, Any]]],
+    bundle: PolicyBundle,
+    enforcement_client: PolicyEnforcementClient,
+) -> TabletopResult:
+    """Build a scenario from raw payloads, then simulate it.
+
+    Thin async wrapper combining ``build_scenario_from_payloads`` with
+    ``simulate_scenario``. Same side-effect contract as simulate_scenario:
+    NO DB writes, NO Receipts, NO chain mutation, NO bundle persistence.
+    The enforcement client may make HTTP calls to evaluate() depending on
+    its concrete implementation.
+
+    Used by the CP9.40 replay-events route to keep the route shape thin:
+    fetch payloads (route's responsibility) -> hand to this function
+    (transform + simulate happens here) -> return TabletopResult.
+    """
+    scenario = build_scenario_from_payloads(
+        name=name,
+        tenant_id=tenant_id,
+        policy_bundle_id=policy_bundle_id,
+        labelled_payloads=labelled_payloads,
+    )
+    return await simulate_scenario(
+        scenario=scenario,
+        bundle=bundle,
+        enforcement_client=enforcement_client,
+    )

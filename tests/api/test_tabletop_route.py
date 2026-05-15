@@ -210,3 +210,48 @@ async def test_simulate_422_when_action_spec_label_empty(app, client) -> None:
     )
     assert response.status_code == 422
     app.dependency_overrides.clear()
+
+
+# ---------- CP9.37 / IP #10 NEW-P11.X.tabletop-bundle-from-storage ----------
+#
+# IP #10 was originally scoped as: "add a route-level filter so tabletop can
+# target draft/proposed bundles, not just active." On inspection of
+# packages/ledger/bundle_repository.py, get_bundle_by_id is STATUS-AGNOSTIC --
+# it returns a bundle by id regardless of approval-workflow status. The
+# tabletop route at CP9.29 already accepts any-status bundle. The capability
+# already exists end-to-end.
+#
+# Disposition: IP #10 RETRACTED as a no-op item. The tests below PROVE the
+# any-status behaviour against the actual five bundle statuses currently
+# defined by alembic 0004 (proposed, reviewed, approved, active, superseded).
+# This locks in the contract going forward so a future bundle-storage change
+# that accidentally introduces a status filter would break a test.
+
+
+@pytest.mark.parametrize(
+    "bundle_status",
+    ["proposed", "reviewed", "approved", "active", "superseded"],
+)
+@pytest.mark.asyncio
+async def test_simulate_accepts_bundle_in_any_workflow_status(
+    app, client, bundle_status: str
+) -> None:
+    """Security engineers can dry-run scenarios against bundles still in the
+    approval workflow, not just active ones. The route + repo are
+    status-agnostic by design.
+    """
+    bundle = build_bundle(tenant_id=_TENANT, version="1.0.0", content=_CONTENT)
+    row = _make_bundle_row(bundle)
+    # The PolicyBundleRow has a `status` column but the route doesn't read it.
+    # We set it on the mock to make the test's intent explicit.
+    row.status = bundle_status
+    app.dependency_overrides[get_session] = _override_session_returning_bundle(row)
+    response = await client.post(
+        "/v1/tabletop/simulate",
+        json=_scenario_body(bundle_id=bundle.id),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["summary"]["total"] == 3
+    assert body["bundle_id"] == str(bundle.id)
+    app.dependency_overrides.clear()

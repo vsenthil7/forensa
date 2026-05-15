@@ -114,3 +114,22 @@ sample-evidence/*.json.signed
 
 # Claude FILE BACKUP RULE artefacts (local-only, never committed)
 _backup/
+
+# Forensa demo video recordings (large binaries; local-only)
+# Only the TOP-LEVEL `demo/` folder is for recordings. The leading
+# slash anchors the pattern so apps/console/tests-e2e/demo/ (which
+# holds the captioned-demo SOURCE specs) is NOT ignored.
+/demo/
+
+# `demovideo/results/` is the run pointer dir. We don't want to
+# track the actual `latest.txt` pointer that the recorder rewrites,
+# but we DO want to track the .gitkeep so the folder structure ships.
+# Standard gitignore gotcha: negating a path inside an ignored dir
+# requires the parent dir to NOT be ignored. So we ignore the
+# contents of demovideo/results/ instead of the dir itself.
+demovideo/results/*
+!demovideo/results/.gitkeep
+!demovideo/results/creation/
+demovideo/results/creation/*
+!demovideo/results/creation/.gitkeep
+

@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 
 from packages.crypto.hash import sha256_hex
 from packages.export.schema import (
+    AnchorEvidence,
     EvidencePack,
     EvidencePackHeader,
     ProvActivity,
@@ -48,15 +49,22 @@ def build_evidence_pack(
     scope_start: datetime,
     scope_end: datetime,
     receipts_with_snapshots: list[tuple[Receipt, UUID]],
+    anchor: AnchorEvidence | None = None,
 ) -> EvidencePack:
     """Compose an EvidencePack from receipts and their snapshot ids.
 
     All receipts must belong to ``tenant_id``. The pack's root_hash is the
-    SHA-256 of canonical_json over (header dict, receipts list, activities list)
-    so any reordering or field tamper is detectable.
+    SHA-256 of canonical_json over (header dict, receipts list, activities list,
+    optional anchor dict) so any reordering or field tamper is detectable.
 
     Receipts are sorted by sequence ASC inside the pack so chain replay is
     direct: receipt[i+1].prev_receipt_hash == receipt[i].receipt_hash.
+
+    The optional ``anchor`` parameter (CP9.23) embeds the day's RFC 3161 TSA
+    proof. When provided, it MUST belong to ``tenant_id`` and is bound into
+    root_hash so any subsequent tamper of the anchor data invalidates the
+    pack. When None, the pack is anchor-less and the bind shape matches the
+    pre-CP9.23 form.
     """
     if scope_end < scope_start:
         raise EvidencePackError("scope_end must be >= scope_start")
@@ -106,11 +114,13 @@ def build_evidence_pack(
         receipt_count=len(items),
     )
 
-    bind = {
+    bind: dict[str, object] = {
         "header": header.model_dump(mode="json"),
         "receipts": [_canonicalise_item(it) for it in items],
         "activities": [a.model_dump(mode="json") for a in activities],
     }
+    if anchor is not None:
+        bind["anchor"] = _canonicalise_anchor(anchor)
     # NOTE (CP9.10, re review finding 3.17.5 RETRACTED): receipt_count IS
     # bound into root_hash because header.model_dump() includes it. The
     # reviewer flagged this as missing then retracted; this comment is here
@@ -121,6 +131,7 @@ def build_evidence_pack(
         header=header,
         receipts=items,
         activities=activities,
+        anchor=anchor,
         root_hash=root_hash,
     )
 
@@ -138,15 +149,34 @@ def _canonicalise_item(it: ReceiptEvidenceItem) -> dict[str, object]:
     return d
 
 
+def _canonicalise_anchor(anchor: AnchorEvidence) -> dict[str, object]:
+    """Dump an AnchorEvidence with Nones replaced by empty-string sentinels.
+
+    canonical_json forbids None values. Deferred anchors carry None on
+    four fields (root_hash, tsr_bytes_b64, tsa_signature_b64,
+    timestamped_at). Bind them as empty-string sentinels so the canonical
+    hash is stable and a deferred-anchor pack still produces a meaningful
+    root_hash that the verifier can reproduce.
+    """
+    d = anchor.model_dump(mode="json")
+    for k in ("root_hash", "tsr_bytes_b64", "tsa_signature_b64", "timestamped_at"):
+        if d.get(k) is None:
+            d[k] = ""
+    return d
+
+
 def verify_evidence_pack(pack: EvidencePack) -> bool:
     """Recompute root_hash from the pack content; True iff matches.
 
     Independent verifier a regulator can run on the JSON-LD wire form to
-    confirm the pack has not been tampered with.
+    confirm the pack has not been tampered with. The bind shape includes
+    the optional ``anchor`` field iff present, matching the build path.
     """
-    bind = {
+    bind: dict[str, object] = {
         "header": pack.header.model_dump(mode="json"),
         "receipts": [_canonicalise_item(it) for it in pack.receipts],
         "activities": [a.model_dump(mode="json") for a in pack.activities],
     }
+    if pack.anchor is not None:
+        bind["anchor"] = _canonicalise_anchor(pack.anchor)
     return sha256_hex(bind) == pack.root_hash

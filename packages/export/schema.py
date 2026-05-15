@@ -16,7 +16,7 @@ The PROV-O block follows the W3C PROV-O recommendation:
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -24,6 +24,94 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 JSONLD_CONTEXT = "https://forensa.dev/ld/v1"
 PROV_NS = "http://www.w3.org/ns/prov#"
 FORENSA_NS = "https://forensa.dev/ns#"
+
+
+class AnchorEvidence(BaseModel):
+    """RFC 3161 TSA anchor proof embedded inside an EvidencePack (CP9.23).
+
+    Carries enough data for an offline verifier to re-verify the TSA
+    signature over the chain root without an additional API call. When
+    the originating ``TimestampAnchorRow`` had ``status='anchored'``,
+    all four of (root_hash, tsr_bytes_b64, tsa_signature_b64,
+    timestamped_at) are populated; when ``status='deferred'`` they are
+    None and ``anchor_id`` + ``status`` + ``tsa_identifier`` +
+    ``anchored_at`` are populated alone (the pack still records that the
+    day was scheduled for anchoring, even if the TSA call did not
+    succeed).
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    anchor_id: UUID = Field(..., description="UUID of the source TimestampAnchorRow")
+    anchor_date: datetime = Field(..., description="UTC midnight of the anchored day")
+    status: Literal["anchored", "deferred"]
+    root_hash: str | None = Field(
+        ..., description="Chain root at anchor time; None when status='deferred'"
+    )
+    tsa_identifier: str = Field(..., description="TSA endpoint URL or identifier string")
+    tsr_bytes_b64: str | None = Field(
+        ..., description="RFC 3161 TimeStampResp DER bytes, base64-encoded; None if deferred"
+    )
+    tsa_signature_b64: str | None = Field(
+        ..., description="TSA signature bytes, base64-encoded; None if deferred"
+    )
+    timestamped_at: datetime | None = Field(
+        ..., description="TSA witness timestamp; None if deferred"
+    )
+    anchored_at: datetime = Field(..., description="When Forensa persisted the anchor row")
+
+    @field_validator("anchor_date", "anchored_at")
+    @classmethod
+    def _tz_aware_required(cls, v: datetime) -> datetime:
+        if v.tzinfo is None:
+            raise ValueError("timestamps must be timezone-aware (UTC)")
+        return v
+
+    @field_validator("timestamped_at")
+    @classmethod
+    def _tz_aware_optional(cls, v: datetime | None) -> datetime | None:
+        if v is not None and v.tzinfo is None:
+            raise ValueError("timestamped_at must be timezone-aware (UTC) when present")
+        return v
+
+    @field_validator("root_hash")
+    @classmethod
+    def _root_hash_hex(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if len(v) != 64:
+            raise ValueError("root_hash must be 64 hex chars when present")
+        if not all(c in "0123456789abcdef" for c in v):
+            raise ValueError("root_hash must be lowercase hex when present")
+        return v
+
+    @classmethod
+    def from_anchor_row(cls, row: Any) -> AnchorEvidence:
+        """Build AnchorEvidence from a TimestampAnchorRow.
+
+        Accepts any object exposing the seven anchor attributes (id,
+        anchor_date, status, root_hash, tsa_identifier, tsr_bytes,
+        tsa_signature, timestamped_at, anchored_at). Used by
+        apps/api/routes/evidence.py at request time and by tests that
+        want a deterministic anchor without going through the DB.
+        """
+        import base64 as _b64
+
+        tsr_bytes = getattr(row, "tsr_bytes", None)
+        tsa_signature = getattr(row, "tsa_signature", None)
+        return cls(
+            anchor_id=row.id,
+            anchor_date=row.anchor_date,
+            status=row.status,
+            root_hash=row.root_hash,
+            tsa_identifier=row.tsa_identifier,
+            tsr_bytes_b64=_b64.b64encode(tsr_bytes).decode("ascii") if tsr_bytes else None,
+            tsa_signature_b64=(
+                _b64.b64encode(tsa_signature).decode("ascii") if tsa_signature else None
+            ),
+            timestamped_at=row.timestamped_at,
+            anchored_at=row.anchored_at,
+        )
 
 
 class EvidencePackHeader(BaseModel):
@@ -111,7 +199,12 @@ class EvidencePack(BaseModel):
 
     Wire form starts with @context binding the namespaces; receipts and activities
     are the two payload arrays. root_hash binds the canonical JSON of
-    (header, sorted receipts, sorted activities) so any tamper is detectable.
+    (header, sorted receipts, sorted activities, anchor) so any tamper is detectable.
+
+    The optional ``anchor`` field (CP9.23) carries the day's RFC 3161 TSA
+    proof when the pack's scope window includes an anchored day; when
+    None, the pack omits the anchor from root_hash binding (legacy /
+    pre-anchored-day shape).
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
@@ -123,6 +216,13 @@ class EvidencePack(BaseModel):
     header: EvidencePackHeader
     receipts: list[ReceiptEvidenceItem]
     activities: list[ProvActivity]
+    anchor: AnchorEvidence | None = Field(
+        default=None,
+        description=(
+            "Optional RFC 3161 TSA anchor binding the day's chain root. Bound "
+            "into root_hash when present; omitted from bind when None."
+        ),
+    )
     root_hash: str = Field(..., min_length=64, max_length=64)
 
     @field_validator("root_hash")

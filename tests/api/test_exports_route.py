@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64 as _b64
+import json as _json
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
@@ -11,6 +13,11 @@ from httpx import ASGITransport, AsyncClient
 
 from apps.api.main import create_app
 from apps.api.routes.receipts import get_session
+from packages.crypto.encrypt import (
+    CipherEnvelope,
+    decrypt_for_recipient,
+    generate_x25519_keypair,
+)
 from packages.crypto.sign import generate_keypair
 from packages.ledger.receipt_builder import build_receipt
 from packages.policy.bundle_builder import build_bundle
@@ -266,4 +273,150 @@ async def test_ma_export_handles_deferred_anchor_row(app, client) -> None:
     assert body["header"]["anchor_count"] == 2
     statuses = {a["status"] for a in body["anchor_proofs"]}
     assert statuses == {"anchored", "deferred"}
+    app.dependency_overrides.clear()
+
+
+# ---------- CP9.36 / NEW-P10.X.ma-export-encryption-at-rest ----------
+#
+# When the caller supplies ?encrypt_for_pubkey_b64=<32B base64 X25519 pubkey>,
+# the response is a CipherEnvelope wrapping the serialised MaDiligenceExport
+# JSON. The acquirer holds the paired private key and recovers the bundle
+# via decrypt_for_recipient. When the query param is omitted, behaviour is
+# unchanged (raw bundle returned). These tests cover both paths plus the
+# malformed-key error surface.
+
+
+@pytest.mark.asyncio
+async def test_ma_export_encrypted_response_is_cipher_envelope(app, client) -> None:
+    """With encrypt_for_pubkey_b64 set, the response is a CipherEnvelope."""
+    day1 = datetime(2026, 5, 13, tzinfo=UTC)
+    pairs1 = await _make_chain_for_day(2, day1)
+    anchor_rows = [_make_anchor_row(day1)]
+    receipts_by_day = {day1: pairs1}
+    app.dependency_overrides[get_session] = _override_session_with_anchors_and_receipts(
+        anchor_rows, receipts_by_day
+    )
+    acquirer_priv, acquirer_pub = generate_x25519_keypair()
+    pub_b64 = _b64.urlsafe_b64encode(acquirer_pub).rstrip(b"=").decode("ascii")
+    response = await client.post(
+        f"/v1/exports/ma-diligence?encrypt_for_pubkey_b64={pub_b64}",
+        json=_request_body(),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    # Response should be a CipherEnvelope shape, NOT a MaDiligenceExport.
+    assert "scheme" in body
+    assert body["scheme"] == "x25519-chacha20poly1305-v1"
+    assert "ephemeral_public_key_b64" in body
+    assert "nonce_b64" in body
+    assert "ciphertext_b64" in body
+    # Critically: the raw bundle fields are NOT in the response (the
+    # confidentiality-at-rest claim depends on this).
+    assert "evidence_packs" not in body
+    assert "ma_root_hash" not in body
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_ma_export_encrypted_response_decrypts_to_valid_bundle(app, client) -> None:
+    """Acquirer with paired private key recovers the original MaDiligenceExport."""
+    day1 = datetime(2026, 5, 13, tzinfo=UTC)
+    day2 = datetime(2026, 5, 14, tzinfo=UTC)
+    pairs1 = await _make_chain_for_day(2, day1)
+    pairs2 = await _make_chain_for_day(3, day2)
+    anchor_rows = [_make_anchor_row(day1), _make_anchor_row(day2)]
+    receipts_by_day = {day1: pairs1, day2: pairs2}
+    app.dependency_overrides[get_session] = _override_session_with_anchors_and_receipts(
+        anchor_rows, receipts_by_day
+    )
+    acquirer_priv, acquirer_pub = generate_x25519_keypair()
+    pub_b64 = _b64.urlsafe_b64encode(acquirer_pub).rstrip(b"=").decode("ascii")
+    response = await client.post(
+        f"/v1/exports/ma-diligence?encrypt_for_pubkey_b64={pub_b64}",
+        json=_request_body(),
+    )
+    assert response.status_code == 200, response.text
+    envelope = CipherEnvelope.model_validate(response.json())
+    plaintext = decrypt_for_recipient(envelope, recipient_private_key=acquirer_priv)
+    decoded = _json.loads(plaintext.decode("utf-8"))
+    # Decrypted payload IS a valid MaDiligenceExport JSON.
+    assert decoded["header"]["tenant_id"] == str(_TENANT)
+    assert decoded["header"]["pack_count"] == 2
+    assert decoded["header"]["total_receipt_count"] == 5
+    assert len(decoded["ma_root_hash"]) == 64
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_ma_export_unencrypted_response_unchanged_when_pubkey_omitted(app, client) -> None:
+    """Backwards compat: no query param -> response is MaDiligenceExport, not CipherEnvelope."""
+    day1 = datetime(2026, 5, 13, tzinfo=UTC)
+    pairs1 = await _make_chain_for_day(1, day1)
+    anchor_rows = [_make_anchor_row(day1)]
+    receipts_by_day = {day1: pairs1}
+    app.dependency_overrides[get_session] = _override_session_with_anchors_and_receipts(
+        anchor_rows, receipts_by_day
+    )
+    response = await client.post("/v1/exports/ma-diligence", json=_request_body())
+    assert response.status_code == 200, response.text
+    body = response.json()
+    # MaDiligenceExport fields present, CipherEnvelope fields absent.
+    assert "ma_root_hash" in body
+    assert "evidence_packs" in body
+    assert "scheme" not in body
+    assert "ciphertext_b64" not in body
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_ma_export_422_when_encrypt_pubkey_is_malformed_base64(app, client) -> None:
+    app.dependency_overrides[get_session] = _override_session_with_anchors_and_receipts([], {})
+    response = await client.post(
+        "/v1/exports/ma-diligence?encrypt_for_pubkey_b64=!!!not-base64!!!",
+        json=_request_body(),
+    )
+    assert response.status_code == 422
+    body = response.json()
+    assert "encrypt_for_pubkey_b64" in body["detail"]
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_ma_export_422_when_encrypt_pubkey_is_wrong_length(app, client) -> None:
+    """16-byte 'pubkey' is valid urlsafe-base64 but wrong length for X25519."""
+    app.dependency_overrides[get_session] = _override_session_with_anchors_and_receipts([], {})
+    short_pub_b64 = _b64.urlsafe_b64encode(b"\x00" * 16).rstrip(b"=").decode("ascii")
+    response = await client.post(
+        f"/v1/exports/ma-diligence?encrypt_for_pubkey_b64={short_pub_b64}",
+        json=_request_body(),
+    )
+    assert response.status_code == 422
+    body = response.json()
+    assert "32 bytes" in body["detail"]
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_ma_export_wrong_recipient_cannot_decrypt(app, client) -> None:
+    """Encrypted for acquirer A; acquirer B (different keypair) cannot decrypt."""
+    from packages.crypto.encrypt import DecryptError
+
+    day1 = datetime(2026, 5, 13, tzinfo=UTC)
+    pairs1 = await _make_chain_for_day(1, day1)
+    anchor_rows = [_make_anchor_row(day1)]
+    receipts_by_day = {day1: pairs1}
+    app.dependency_overrides[get_session] = _override_session_with_anchors_and_receipts(
+        anchor_rows, receipts_by_day
+    )
+    _, acquirer_a_pub = generate_x25519_keypair()
+    acquirer_b_priv, _ = generate_x25519_keypair()
+    pub_b64 = _b64.urlsafe_b64encode(acquirer_a_pub).rstrip(b"=").decode("ascii")
+    response = await client.post(
+        f"/v1/exports/ma-diligence?encrypt_for_pubkey_b64={pub_b64}",
+        json=_request_body(),
+    )
+    assert response.status_code == 200, response.text
+    envelope = CipherEnvelope.model_validate(response.json())
+    with pytest.raises(DecryptError, match="AEAD decryption failed"):
+        decrypt_for_recipient(envelope, recipient_private_key=acquirer_b_priv)
     app.dependency_overrides.clear()

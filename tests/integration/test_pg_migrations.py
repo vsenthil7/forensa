@@ -82,16 +82,16 @@ async def _current_revision(engine: AsyncEngine) -> str | None:
         return row[0] if row else None
 
 
-async def test_upgrade_head_brings_schema_to_0006(
+async def test_upgrade_head_brings_schema_to_0007(
     pg_engine: AsyncEngine, pg_url: str, repo_root
 ) -> None:
-    """Forward path: empty DB -> all six migrations -> 0006 head schema."""
+    """Forward path: empty DB -> all seven migrations -> 0007 head schema."""
     _run_alembic(["downgrade", "base"], pg_url, repo_root)
 
     result = _run_alembic(["upgrade", "head"], pg_url, repo_root)
     assert result.returncode == 0, f"upgrade failed: {result.stderr}"
 
-    assert await _current_revision(pg_engine) == "0006_agent_signature"
+    assert await _current_revision(pg_engine) == "0007_timestamp_anchors"
 
     for table in (
         "tenants",
@@ -102,6 +102,7 @@ async def test_upgrade_head_brings_schema_to_0006(
         "receipts",
         "policy_bundle_approvals",
         "idempotency_records",
+        "timestamp_anchors",  # CP9.19 / BR-06
     ):
         assert await _table_exists(pg_engine, table), f"missing table: {table}"
 
@@ -109,6 +110,8 @@ async def test_upgrade_head_brings_schema_to_0006(
     assert await _trigger_exists(pg_engine, "trg_policy_bundle_approvals_block_update")
     assert await _trigger_exists(pg_engine, "trg_policy_bundle_approvals_block_delete")
     assert await _index_exists(pg_engine, "ix_idempotency_records_expires_at")
+    # CP9.19: timestamp_anchors index.
+    assert await _index_exists(pg_engine, "ix_timestamp_anchors_tenant_anchored")
 
     # CP9.18: receipts table has agent_signature column.
     async with pg_engine.connect() as conn:
@@ -124,18 +127,45 @@ async def test_upgrade_head_brings_schema_to_0006(
         assert row[1] == "YES"
 
 
-async def test_downgrade_one_drops_0006_objects(
+async def test_downgrade_one_drops_0007_objects(
     pg_engine: AsyncEngine, pg_url: str, repo_root
 ) -> None:
-    """Reverse path: 0006 -> 0005 must remove agent_signature column cleanly."""
+    """Reverse path: 0007 -> 0006 must drop timestamp_anchors table cleanly."""
     _run_alembic(["upgrade", "head"], pg_url, repo_root)
-    assert await _current_revision(pg_engine) == "0006_agent_signature"
+    assert await _current_revision(pg_engine) == "0007_timestamp_anchors"
 
     result = _run_alembic(["downgrade", "-1"], pg_url, repo_root)
     assert result.returncode == 0, f"downgrade failed: {result.stderr}"
 
+    assert await _current_revision(pg_engine) == "0006_agent_signature"
+
+    assert not await _table_exists(pg_engine, "timestamp_anchors")
+    assert not await _index_exists(pg_engine, "ix_timestamp_anchors_tenant_anchored")
+    # The 0006 objects must still be present.
+    async with pg_engine.connect() as conn:
+        result_col = await conn.execute(
+            text(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = 'receipts' AND column_name = 'agent_signature'"
+            )
+        )
+        assert result_col.first() is not None
+    assert await _table_exists(pg_engine, "idempotency_records")
+
+
+async def test_downgrade_two_drops_0006_objects(
+    pg_engine: AsyncEngine, pg_url: str, repo_root
+) -> None:
+    """Reverse path: 0007 -> 0005 must remove agent_signature column AND timestamp_anchors cleanly."""
+    _run_alembic(["upgrade", "head"], pg_url, repo_root)
+    assert await _current_revision(pg_engine) == "0007_timestamp_anchors"
+
+    result = _run_alembic(["downgrade", "-2"], pg_url, repo_root)
+    assert result.returncode == 0, f"downgrade failed: {result.stderr}"
+
     assert await _current_revision(pg_engine) == "0005_idempotency_records"
 
+    assert not await _table_exists(pg_engine, "timestamp_anchors")
     async with pg_engine.connect() as conn:
         result_col = await conn.execute(
             text(
@@ -148,58 +178,59 @@ async def test_downgrade_one_drops_0006_objects(
     assert await _table_exists(pg_engine, "idempotency_records")
 
 
-async def test_downgrade_two_steps_via_intermediate_0005(
+async def test_downgrade_three_steps_via_intermediate_0006(
     pg_engine: AsyncEngine, pg_url: str, repo_root
 ) -> None:
-    """From 0005 (one-step-down-from-head), step -1 again -> 0004.
+    """From 0006 (one-step-down-from-head), step -1 again -> 0005.
 
-    Smoke-test path: ensures intermediate 0005 state is itself reversible to
-    0004 cleanly, decoupled from the head-down-to-0004 path that
-    ``test_downgrade_two_drops_0005_objects`` exercises.
+    Smoke-test path: ensures intermediate 0006 state is itself reversible to
+    0005 cleanly, decoupled from the head-down-to-0005 path that
+    ``test_downgrade_two_drops_0006_objects`` exercises.
     """
     _run_alembic(["upgrade", "head"], pg_url, repo_root)
     _run_alembic(["downgrade", "-1"], pg_url, repo_root)
-    assert await _current_revision(pg_engine) == "0005_idempotency_records"
+    assert await _current_revision(pg_engine) == "0006_agent_signature"
 
     result = _run_alembic(["downgrade", "-1"], pg_url, repo_root)
     assert result.returncode == 0, f"downgrade failed: {result.stderr}"
 
-    assert await _current_revision(pg_engine) == "0004_bundle_approval_workflow"
-    assert not await _table_exists(pg_engine, "idempotency_records")
-    assert not await _index_exists(pg_engine, "ix_idempotency_records_expires_at")
-    # The 0004 objects must STILL be present after only stepping back one.
-    assert await _table_exists(pg_engine, "policy_bundle_approvals")
+    assert await _current_revision(pg_engine) == "0005_idempotency_records"
+    assert not await _table_exists(pg_engine, "timestamp_anchors")
+    # idempotency_records still present at 0005.
+    assert await _table_exists(pg_engine, "idempotency_records")
 
 
-async def test_downgrade_two_drops_0005_objects(
+async def test_downgrade_three_drops_0005_objects(
     pg_engine: AsyncEngine, pg_url: str, repo_root
 ) -> None:
-    """Reverse path: 0006 -> 0004 must remove idempotency_records + agent_signature cleanly."""
+    """Reverse path: 0007 -> 0004 must remove every object 0005+0006+0007 added."""
     _run_alembic(["upgrade", "head"], pg_url, repo_root)
-    assert await _current_revision(pg_engine) == "0006_agent_signature"
+    assert await _current_revision(pg_engine) == "0007_timestamp_anchors"
 
-    result = _run_alembic(["downgrade", "-2"], pg_url, repo_root)
+    result = _run_alembic(["downgrade", "-3"], pg_url, repo_root)
     assert result.returncode == 0, f"downgrade failed: {result.stderr}"
 
     assert await _current_revision(pg_engine) == "0004_bundle_approval_workflow"
+    assert not await _table_exists(pg_engine, "timestamp_anchors")
     assert not await _table_exists(pg_engine, "idempotency_records")
     assert not await _index_exists(pg_engine, "ix_idempotency_records_expires_at")
     # The 0004 objects must STILL be present.
     assert await _table_exists(pg_engine, "policy_bundle_approvals")
 
 
-async def test_downgrade_three_drops_0004_objects(
+async def test_downgrade_four_drops_0004_objects(
     pg_engine: AsyncEngine, pg_url: str, repo_root
 ) -> None:
-    """Reverse path: 0006 -> 0003 must remove every object 0004 + 0005 + 0006 created."""
+    """Reverse path: 0007 -> 0003 must unwind through every later migration."""
     _run_alembic(["upgrade", "head"], pg_url, repo_root)
-    assert await _current_revision(pg_engine) == "0006_agent_signature"
+    assert await _current_revision(pg_engine) == "0007_timestamp_anchors"
 
-    result = _run_alembic(["downgrade", "-3"], pg_url, repo_root)
-    assert result.returncode == 0, f"downgrade -3 failed: {result.stderr}"
+    result = _run_alembic(["downgrade", "-4"], pg_url, repo_root)
+    assert result.returncode == 0, f"downgrade -4 failed: {result.stderr}"
 
     assert await _current_revision(pg_engine) == "0003_event_output"
 
+    assert not await _table_exists(pg_engine, "timestamp_anchors")
     assert not await _table_exists(pg_engine, "idempotency_records")
     assert not await _table_exists(pg_engine, "policy_bundle_approvals")
     assert not await _index_exists(pg_engine, "uq_policy_bundles_one_active_per_tenant")
@@ -210,24 +241,26 @@ async def test_downgrade_three_drops_0004_objects(
 async def test_upgrade_after_downgrade_round_trip(
     pg_engine: AsyncEngine, pg_url: str, repo_root
 ) -> None:
-    """Full round-trip: head -> head-3 -> head must finish at head with full schema.
+    """Full round-trip: head -> head-4 -> head must finish at head with full schema.
 
     Catches the subtle migration bug where downgrade leaves orphan state
     (sequence, type, function) that prevents a clean re-upgrade.
     """
     _run_alembic(["upgrade", "head"], pg_url, repo_root)
-    _run_alembic(["downgrade", "-3"], pg_url, repo_root)
+    _run_alembic(["downgrade", "-4"], pg_url, repo_root)
 
     result = _run_alembic(["upgrade", "head"], pg_url, repo_root)
     assert result.returncode == 0, f"re-upgrade failed: {result.stderr}"
 
-    assert await _current_revision(pg_engine) == "0006_agent_signature"
+    assert await _current_revision(pg_engine) == "0007_timestamp_anchors"
     assert await _table_exists(pg_engine, "policy_bundle_approvals")
     assert await _table_exists(pg_engine, "idempotency_records")
+    assert await _table_exists(pg_engine, "timestamp_anchors")
     assert await _index_exists(pg_engine, "uq_policy_bundles_one_active_per_tenant")
     assert await _trigger_exists(pg_engine, "trg_policy_bundle_approvals_block_update")
     assert await _trigger_exists(pg_engine, "trg_policy_bundle_approvals_block_delete")
     assert await _index_exists(pg_engine, "ix_idempotency_records_expires_at")
+    assert await _index_exists(pg_engine, "ix_timestamp_anchors_tenant_anchored")
     # CP9.18 agent_signature column.
     async with pg_engine.connect() as conn:
         result_col = await conn.execute(

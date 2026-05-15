@@ -13,6 +13,7 @@ from packages.ledger.models import (
     PolicySnapshotRow,
     ReceiptRow,
     TenantRow,
+    TimestampAnchorRow,
 )
 
 
@@ -26,6 +27,7 @@ def test_all_tables_registered():
         "policy_snapshots",
         "events",
         "receipts",
+        "timestamp_anchors",  # CP9.19 - BR-06 RFC 3161 TSA anchoring
     }
 
 
@@ -216,4 +218,38 @@ def test_tenant_agents_relationship():
 def test_base_is_declarative():
     """Base must be a DeclarativeBase subclass; sanity ping on metadata presence."""
     assert Base.metadata is not None
-    assert len(Base.metadata.tables) == 7  # CP9.15 added policy_bundle_approvals
+    assert len(Base.metadata.tables) == 8  # CP9.19 added timestamp_anchors
+
+
+def test_timestamp_anchor_columns_and_constraints():
+    """CP9.19 / BR-06: new timestamp_anchors table."""
+    cols = {c.name for c in TimestampAnchorRow.__table__.columns}
+    assert cols == {
+        "id",
+        "tenant_id",
+        "anchor_date",
+        "root_hash",
+        "tsa_identifier",
+        "tsr_bytes",
+        "tsa_signature",
+        "timestamped_at",
+        "anchored_at",
+        "status",
+    }
+    constraint_names = {c.name for c in TimestampAnchorRow.__table__.constraints if c.name}
+    assert "uq_timestamp_anchors_tenant_date" in constraint_names
+    assert "ck_timestamp_anchors_status" in constraint_names
+    idx_names = {ix.name for ix in TimestampAnchorRow.__table__.indexes}
+    assert "ix_timestamp_anchors_tenant_anchored" in idx_names
+    # FK to tenants only.
+    fks = {fk.target_fullname for fk in TimestampAnchorRow.__table__.foreign_keys}
+    assert fks == {"tenants.id"}
+    # root_hash / tsr_bytes / tsa_signature / timestamped_at are nullable
+    # (deferred tombstones leave them NULL).
+    assert TimestampAnchorRow.__table__.columns["root_hash"].nullable is True
+    assert TimestampAnchorRow.__table__.columns["tsr_bytes"].nullable is True
+    assert TimestampAnchorRow.__table__.columns["tsa_signature"].nullable is True
+    assert TimestampAnchorRow.__table__.columns["timestamped_at"].nullable is True
+    # status and anchored_at are NOT nullable.
+    assert TimestampAnchorRow.__table__.columns["status"].nullable is False
+    assert TimestampAnchorRow.__table__.columns["anchored_at"].nullable is False

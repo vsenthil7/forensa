@@ -94,6 +94,7 @@ async def pg_clean_session(pg_engine: AsyncEngine) -> AsyncIterator[AsyncSession
         await conn.execute(
             text(
                 "TRUNCATE TABLE "
+                "timestamp_anchors, idempotency_records, "
                 "policy_bundle_approvals, receipts, events, "
                 "policy_snapshots, policy_bundles, agents, tenants "
                 "RESTART IDENTITY CASCADE"

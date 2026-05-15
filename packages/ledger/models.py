@@ -289,3 +289,96 @@ class ReceiptRow(Base):
         ),
     )
     signed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class TimestampAnchorRow(Base):
+    """CP9.19 / BR-06: external-TSA anchor of a tenant's receipt chain on a date.
+
+    One row per ``(tenant_id, anchor_date)`` covers ALL receipts for that
+    tenant on that date. The anchor's ``root_hash`` is the ``receipt_hash``
+    of the latest receipt for the tenant whose ``signed_at`` falls within
+    ``[anchor_date 00:00:00 UTC, anchor_date 23:59:59.999999 UTC]``. Any
+    earlier receipt that day is provably included because the chain is
+    hash-linked.
+
+    The ``tsr_bytes`` column holds the raw TSR returned by the TSA
+    (production: ASN.1 DER per RFC 3161 §3.5; mock: deterministic JSON).
+    A regulator with the TSA's public key can verify ``tsa_signature``
+    against ``(root_hash, timestamped_at)`` and prove the root existed
+    at the timestamp.
+
+    Append-only by design. Reprocessing a day's chain (e.g. because the
+    TSA was down on the original date) writes a NEW row with the same
+    ``(tenant_id, anchor_date)`` only if the previous row's
+    ``status='deferred'`` (a tombstone) - enforced at the application
+    layer via the anchor module.
+    """
+
+    __tablename__ = "timestamp_anchors"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "anchor_date", name="uq_timestamp_anchors_tenant_date"),
+        CheckConstraint(
+            "status IN ('anchored', 'deferred')",
+            name="ck_timestamp_anchors_status",
+        ),
+        Index("ix_timestamp_anchors_tenant_anchored", "tenant_id", "anchored_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    tenant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("tenants.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    anchor_date: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        comment=(
+            "Calendar date (UTC midnight) this anchor covers. Used as the"
+            " coarse grouping key alongside tenant_id."
+        ),
+    )
+    root_hash: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        comment=(
+            "Latest receipt_hash for this tenant on anchor_date. NULL iff"
+            " status='deferred' (no receipts to anchor or TSA unavailable)."
+        ),
+    )
+    tsa_identifier: Mapped[str] = mapped_column(String(256), nullable=False)
+    tsr_bytes: Mapped[bytes | None] = mapped_column(
+        LargeBinary,
+        nullable=True,
+        comment=(
+            "Raw TSR from TSA. NULL iff status='deferred'. Production: ASN.1"
+            " DER per RFC 3161. Mock: deterministic JSON."
+        ),
+    )
+    tsa_signature: Mapped[bytes | None] = mapped_column(
+        LargeBinary(64),
+        nullable=True,
+        comment="Ed25519 sig from TSA. NULL iff status='deferred'.",
+    )
+    timestamped_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment=(
+            "When the TSA claims the root was witnessed (their clock). NULL iff"
+            " status='deferred'."
+        ),
+    )
+    anchored_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        comment="When Forensa persisted this anchor row (server clock).",
+    )
+    status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        comment=(
+            "'anchored' = TSA returned a valid response; 'deferred' = TSA was"
+            " unavailable or no receipts to anchor; anchor module retries"
+            " deferred rows on the next run."
+        ),
+    )

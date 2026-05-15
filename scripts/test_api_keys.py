@@ -2,8 +2,8 @@
 
 Tests the Gemini API key with a minimal call. Verifies:
   1. .env loads
-  2. google-generativeai SDK can authenticate
-  3. Gemini Pro returns a real response
+  2. google-genai SDK can authenticate (CP9.20 migrated from google-generativeai)
+  3. Gemini 2.5 Pro returns a real response
   4. LiveNarrativeClient construction + generate_narrative round-trip works
   5. The 4-layer prompt-injection defence does not false-positive on real output
 
@@ -47,15 +47,21 @@ async def test_gemini_raw() -> bool:
         return False
 
     try:
-        import google.generativeai as genai  # type: ignore[import-not-found,unused-ignore]
+        from google import genai  # type: ignore[import-untyped]
+        from google.genai import types as genai_types  # type: ignore[import-untyped]
 
-        genai.configure(api_key=key)  # type: ignore[attr-defined,unused-ignore]
-        model_id = os.environ.get("FORENSA_GEMINI_MODEL_ID", "gemini-1.5-pro-latest")
-        model = genai.GenerativeModel(model_id)  # type: ignore[attr-defined,unused-ignore]
-        # Synchronous SDK call wrapped via asyncio.to_thread to keep the test async-shaped.
+        model_id = os.environ.get("FORENSA_GEMINI_MODEL_ID", "gemini-2.5-pro")
+        client = genai.Client(api_key=key)
+        config = genai_types.GenerateContentConfig(
+            temperature=0.0,
+            max_output_tokens=64,
+            thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+        )
         resp = await asyncio.to_thread(
-            model.generate_content,
-            "Reply with just the word PONG. No punctuation. No other words.",
+            client.models.generate_content,
+            model=model_id,
+            contents="Reply with just the word PONG. No punctuation. No other words.",
+            config=config,
         )
         text = (resp.text or "").strip()
         print(f"  GEMINI RAW:  PASS -- model='{model_id}' response='{text[:80]}'")
@@ -75,7 +81,7 @@ async def test_live_narrative_client() -> bool:
     try:
         from packages.narrative.live_client import LiveNarrativeClient
 
-        model_id = os.environ.get("FORENSA_GEMINI_MODEL_ID", "gemini-1.5-pro-latest")
+        model_id = os.environ.get("FORENSA_GEMINI_MODEL_ID", "gemini-2.5-pro")
         client = LiveNarrativeClient(api_key=key, model_id=model_id, timeout_seconds=20.0)
 
         # Minimal prompt string mimicking what build_prompt produces.
@@ -137,7 +143,7 @@ async def main() -> int:
     print("=" * 60)
     print(f"  Working dir: {Path.cwd()}")
     print(f"  Key present: {'yes' if os.environ.get('FORENSA_GEMINI_API_KEY') else 'no'}")
-    print(f"  Model id:    {os.environ.get('FORENSA_GEMINI_MODEL_ID', 'gemini-1.5-pro-latest')}")
+    print(f"  Model id:    {os.environ.get('FORENSA_GEMINI_MODEL_ID', 'gemini-2.5-pro')}")
     print("-" * 60)
 
     ok_selector = test_selector_wires_live()

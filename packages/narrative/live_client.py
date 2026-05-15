@@ -61,7 +61,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 _ENV_VAR = "FORENSA_GEMINI_API_KEY"
 
-_DEFAULT_MODEL_ID = "gemini-1.5-pro-latest"
+_DEFAULT_MODEL_ID = "gemini-2.5-pro"
 
 _SYSTEM_INSTRUCTION = (
     "You are Forensa Narrative, a regulator-facing prose summariser for"
@@ -183,35 +183,37 @@ class LiveNarrativeClient(NarrativeClient):
     async def _default_generate_call(
         self, system_instruction: str, user_message: str, max_tokens: int
     ) -> tuple[str, int, int]:  # pragma: no cover - exercised in integration only
-        """Default implementation: call google-generativeai.
+        """Default implementation: call google-genai (CP9.20).
+
+        Migrated from google.generativeai (deprecated) to google.genai in
+        CP9.20. The new SDK uses a Client.aio.models.generate_content surface
+        and accepts a GenerateContentConfig with system_instruction + thinking
+        budget knobs directly. The thinking_config={'thinking_budget': 0}
+        knob (only available in this SDK) disables internal reasoning token
+        spend on thinking models (Gemini 2.5 Pro, Gemini 3.x), which under
+        the old SDK forced callers to pass generous max_tokens to leave room
+        after thinking was consumed. This is the cleaner contract.
 
         Wrapped in pragma because real Gemini network calls are not exercised
-        in unit tests; the integration / live path is recorded as part of the
-        CP9.5 90-second demo MP4. All unit tests inject a stub via
-        ``generate_call=`` in the constructor.
+        in unit tests; the integration / live path is recorded in the demo
+        MP4. All unit tests inject a stub via ``generate_call=`` in the
+        constructor.
         """
-        import google.generativeai as genai  # type: ignore[import-not-found,unused-ignore]
+        from google import genai  # type: ignore[import-untyped]
+        from google.genai import types as genai_types  # type: ignore[import-untyped]
 
-        genai.configure(api_key=self._api_key)  # type: ignore[attr-defined,unused-ignore]
-        model = genai.GenerativeModel(  # type: ignore[attr-defined,unused-ignore]
-            model_name=self._model_id, system_instruction=system_instruction
+        client = genai.Client(api_key=self._api_key)
+        config = genai_types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            max_output_tokens=max_tokens,
+            temperature=0.2,
+            thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
         )
-        # Output budget needs headroom for "thinking" models (Gemini 2.5 Pro,
-        # Gemini 3.x). These models spend internal reasoning tokens before the
-        # visible response. The cleaner fix is `thinking_config={'thinking_budget': 0}`
-        # but that param only exists in the new `google.genai` SDK; the
-        # deprecated `google.generativeai` we're on today doesn't know it.
-        # Tracked as NEW-P9.X.genai-sdk-migration in the backlog. Until then,
-        # callers should pass max_tokens generously (>= 1024) so the visible
-        # output gets enough budget after reasoning is consumed.
-        generation_config: dict[str, Any] = {
-            "max_output_tokens": max_tokens,
-            "temperature": 0.2,
-        }
         response = await asyncio.wait_for(
-            model.generate_content_async(
-                user_message,
-                generation_config=generation_config,  # type: ignore[arg-type,unused-ignore]
+            client.aio.models.generate_content(
+                model=self._model_id,
+                contents=user_message,
+                config=config,
             ),
             timeout=self._timeout_seconds,
         )

@@ -109,7 +109,7 @@ async def test_success_returns_narrative_result_with_correct_fields():
     )
     result = await client.generate_narrative("any prompt")
     assert result.narrative_text == "The agent denied 2 of 5 actions."
-    assert result.model_id == "gemini-1.5-pro-latest"
+    assert result.model_id == "gemini-2.5-pro"
     assert result.prompt_token_count == 100
     assert result.completion_token_count == 25
     assert len(result.content_hash) == 64
@@ -288,7 +288,7 @@ async def test_content_hash_formula_matches_mock_formula():
     narrative_text). This is enforced by both using the same bind shape.
     """
     fixed_text = "Three receipts verified; one denied."
-    fixed_model = "gemini-1.5-pro-latest"
+    fixed_model = "gemini-2.5-pro"
     live = LiveNarrativeClient(
         api_key="k",
         model_id=fixed_model,

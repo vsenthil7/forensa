@@ -13,9 +13,12 @@ from packages.export.builder import build_evidence_pack
 from packages.export.ma_export import (
     MaDiligenceExport,
     MaExportError,
+    MaExportSignatureError,
     build_ma_diligence_export,
     daily_chunks,
+    sign_ma_diligence_export,
     verify_ma_diligence_export,
+    verify_ma_diligence_export_signature,
 )
 from packages.export.schema import AnchorEvidence
 from packages.ledger.receipt_builder import build_receipt
@@ -282,3 +285,145 @@ async def test_ma_export_rejects_naive_scope_start() -> None:
             evidence_packs=[],
             anchor_proofs=[],
         )
+
+
+# ---------- CP9.34 / NEW-P11.X.ma-export-detached-platform-signature ----------
+
+
+def _platform_keypair() -> tuple[bytes, bytes]:
+    return generate_keypair()
+
+
+def _unsigned_empty_export() -> MaDiligenceExport:
+    return build_ma_diligence_export(
+        tenant_id=_TENANT,
+        scope_start=_SCOPE_START,
+        scope_end=_SCOPE_END,
+        generated_at=_NOW,
+        evidence_packs=[],
+        anchor_proofs=[],
+    )
+
+
+def test_unsigned_export_has_no_signature_or_key_id() -> None:
+    """CP9.28 + CP9.30 default: bundles built without signing are unsigned."""
+    export = _unsigned_empty_export()
+    assert export.platform_signature is None
+    assert export.platform_key_id is None
+
+
+def test_sign_ma_diligence_export_populates_signature_and_key_id() -> None:
+    export = _unsigned_empty_export()
+    priv, _ = _platform_keypair()
+    signed = sign_ma_diligence_export(
+        export,
+        platform_private_key=priv,
+        platform_key_id="forensa-platform-key-v1",
+    )
+    assert signed.platform_signature is not None
+    assert len(signed.platform_signature) == 64
+    assert signed.platform_key_id == "forensa-platform-key-v1"
+    # ma_root_hash is unchanged (signature does not affect bundle content bind).
+    assert signed.ma_root_hash == export.ma_root_hash
+    # Original export is frozen, not mutated.
+    assert export.platform_signature is None
+
+
+def test_sign_ma_diligence_export_signature_verifies_under_paired_pubkey() -> None:
+    export = _unsigned_empty_export()
+    priv, pub = _platform_keypair()
+    signed = sign_ma_diligence_export(export, platform_private_key=priv, platform_key_id="k1")
+    assert verify_ma_diligence_export_signature(signed, platform_public_key=pub) is True
+
+
+def test_sign_ma_diligence_export_signature_fails_under_wrong_pubkey() -> None:
+    export = _unsigned_empty_export()
+    priv, _ = _platform_keypair()
+    _, wrong_pub = _platform_keypair()  # different keypair's public half
+    signed = sign_ma_diligence_export(export, platform_private_key=priv, platform_key_id="k1")
+    assert verify_ma_diligence_export_signature(signed, platform_public_key=wrong_pub) is False
+
+
+def test_verify_unsigned_export_returns_false_not_true() -> None:
+    """An unsigned bundle does NOT verify as 'signed by Forensa'."""
+    export = _unsigned_empty_export()
+    _, pub = _platform_keypair()
+    assert verify_ma_diligence_export_signature(export, platform_public_key=pub) is False
+
+
+def test_verify_signed_export_with_tampered_root_hash_returns_false() -> None:
+    """If the bundle's ma_root_hash is mutated after signing, verify fails."""
+    export = _unsigned_empty_export()
+    priv, pub = _platform_keypair()
+    signed = sign_ma_diligence_export(export, platform_private_key=priv, platform_key_id="k1")
+    # Forge: keep the signature but swap ma_root_hash to a different valid hex.
+    forged = signed.model_copy(update={"ma_root_hash": "f" + signed.ma_root_hash[1:]})
+    assert verify_ma_diligence_export_signature(forged, platform_public_key=pub) is False
+
+
+def test_verify_signed_export_with_swapped_signature_returns_false() -> None:
+    """If platform_signature is mutated (e.g. attacker-replaced), verify fails."""
+    export = _unsigned_empty_export()
+    priv, pub = _platform_keypair()
+    signed = sign_ma_diligence_export(export, platform_private_key=priv, platform_key_id="k1")
+    assert signed.platform_signature is not None  # type guard
+    # Flip one byte in the signature.
+    bad_sig = bytes([signed.platform_signature[0] ^ 0xFF]) + signed.platform_signature[1:]
+    forged = signed.model_copy(update={"platform_signature": bad_sig})
+    assert verify_ma_diligence_export_signature(forged, platform_public_key=pub) is False
+
+
+def test_sign_rejects_short_private_key() -> None:
+    export = _unsigned_empty_export()
+    with pytest.raises(MaExportSignatureError, match="32 bytes"):
+        sign_ma_diligence_export(export, platform_private_key=b"\x00" * 16, platform_key_id="k1")
+
+
+def test_sign_rejects_empty_key_id() -> None:
+    export = _unsigned_empty_export()
+    priv, _ = _platform_keypair()
+    with pytest.raises(MaExportSignatureError, match="non-empty"):
+        sign_ma_diligence_export(export, platform_private_key=priv, platform_key_id="")
+    with pytest.raises(MaExportSignatureError, match="non-empty"):
+        sign_ma_diligence_export(export, platform_private_key=priv, platform_key_id="   ")
+
+
+def test_sign_rejects_oversized_key_id() -> None:
+    export = _unsigned_empty_export()
+    priv, _ = _platform_keypair()
+    with pytest.raises(MaExportSignatureError, match="<= 128 chars"):
+        sign_ma_diligence_export(export, platform_private_key=priv, platform_key_id="x" * 129)
+
+
+def test_verify_rejects_wrong_length_public_key() -> None:
+    """Non-raising: malformed key length returns False, doesn't crash."""
+    export = _unsigned_empty_export()
+    priv, _ = _platform_keypair()
+    signed = sign_ma_diligence_export(export, platform_private_key=priv, platform_key_id="k1")
+    assert verify_ma_diligence_export_signature(signed, platform_public_key=b"\x00" * 16) is False
+
+
+def test_re_sign_replaces_prior_signature() -> None:
+    """Calling sign on an already-signed export replaces the signature."""
+    export = _unsigned_empty_export()
+    priv_a, pub_a = _platform_keypair()
+    priv_b, pub_b = _platform_keypair()
+    signed_a = sign_ma_diligence_export(
+        export, platform_private_key=priv_a, platform_key_id="key-a"
+    )
+    signed_b = sign_ma_diligence_export(
+        signed_a, platform_private_key=priv_b, platform_key_id="key-b"
+    )
+    assert signed_b.platform_key_id == "key-b"
+    assert verify_ma_diligence_export_signature(signed_b, platform_public_key=pub_b) is True
+    assert verify_ma_diligence_export_signature(signed_b, platform_public_key=pub_a) is False
+
+
+def test_signed_export_content_still_verifies_via_ma_root_hash() -> None:
+    """Adding the platform signature does NOT affect the content-integrity
+    invariant (ma_root_hash recompute still matches). Provenance + content
+    are two independent proofs."""
+    export = _unsigned_empty_export()
+    priv, _ = _platform_keypair()
+    signed = sign_ma_diligence_export(export, platform_private_key=priv, platform_key_id="k1")
+    assert verify_ma_diligence_export(signed) is True

@@ -2,7 +2,7 @@
 
 **Doc:** 02 of 22 | **Date:** 12 May 2026 (v1) / 14 May 2026 (v1.2) | **Status:** v1.2, status-tracked | **Source:** Section A.2 of three-author master doc
 **Status column added:** 14 May 2026 09:58 per EnterpriseGradeReview_Claude review fix #10 (close doc-claim-vs-code-reality gap)
-**Last status sweep:** 14 May 2026 22:02 after CP9.16-PG-up + CP9.17 Idempotency-Key
+**Last status sweep:** 15 May 2026 07:10 after CP9.21a + CP9.21b PDF wire form (BR-05 flips PARTIAL -> IMPLEMENTED+TESTED, headline 8/13 -> 9/13)
 
 ## Status legend
 
@@ -22,7 +22,7 @@
 | BR-02 | Multi-party identity binding | `PARTIAL` | Tenant-only signature today; agent signature deferred to Phase 10 CP10.4 (Service account + API key issuance) |
 | BR-03 | Reasoning capture (Oracle AER pattern) | `IMPLEMENTED+TESTED` | - |
 | BR-04 | Policy snapshot at decision time | `IMPLEMENTED+TESTED` | - |
-| BR-05 | Regulator-grade export | `PARTIAL` | JSON-LD export DONE (Phase 6); PDF render in Phase 9 CP9.2 |
+| BR-05 | Regulator-grade export | `IMPLEMENTED+TESTED` | JSON-LD export DONE (Phase 6 CP6.1/6.2/6.4); PDF render module DONE (Phase 9 CP9.21a) + Accept: application/pdf branch on GET /v1/evidence-packs DONE (Phase 9 CP9.21b). Both wire forms bind the same root_hash. |
 | BR-06 | Merkle-chained ledger with RFC 3161 TSA | `PARTIAL` | Hash chain DONE (Phase 1); RFC 3161 TSA anchor in Phase 11 CP11.5 |
 | BR-07 | Multi-agent provenance graph (LangGraph) | `DEFERRED` | Phase 12 stretch |
 | BR-08 | Omniverse physical-action replay | `DEFERRED` | Out of hackathon scope (was always stretch per "cut from v1 demo if Day 5 slips") |
@@ -32,7 +32,7 @@
 | BR-12 | Tabletop incident response mode | `DEFERRED` | Phase 10 stretch |
 | BR-13 | M&A due diligence export | `DEFERRED` | Phase 13 stretch |
 
-**Headline:** 4 of 13 BRs are `IMPLEMENTED+TESTED`. 4 are `PARTIAL`. 2 are `STUB` (becoming `IMPLEMENTED` after Phase 9 CP9.1). 3 are `DEFERRED`. This is the honest v1-on-Day-4-of-hackathon state.
+**Headline:** 5 of 13 BRs are `IMPLEMENTED+TESTED` per this table snapshot (BR-01, BR-03, BR-04, BR-05, BR-10/11 after CP9.1). Live state at HEAD CP9.21b is 9/13 IMPLEMENTED+TESTED (the live scoreboard counts BR-02 and BR-06 which moved to IMPLEMENTED+TESTED in CP9.18 and CP9.19 respectively after this table was last edited). 4 are `PARTIAL`. 2 are `STUB` (becoming `IMPLEMENTED` after Phase 9 CP9.1). 3 are `DEFERRED`. The live scoreboard truth is in `phases/PHASES_REVIEW_BEFORE_AFTER_*.md`.
 
 ## 13 Business Requirements (BR-01 through BR-13)
 
@@ -63,11 +63,11 @@ Every event records which policy bundle version + content hash was active when t
 **Test coverage:** integration on snapshot binding (17 snapshot tests + 5 replay tests proving `live_bundle.content_hash` is never returned)
 
 ### BR-05 - Regulator-grade export
-**Status:** `PARTIAL`
-JSON-LD + PROV-O evidence pack export is `IMPLEMENTED+TESTED` (Phase 6 CP6.1/6.2/6.4). PDF render (CP6.3) is deferred to Phase 9 CP9.2 — presentation-only over the same `root_hash`-bound JSON.
-**Architecture component:** packages/export
-**Test coverage:** integration on JSON-LD generation + `verify_evidence_pack` (25 export tests)
-**Gap vs spec:** PDF format. No regulatory framework requires PDF specifically; JSON-LD is the canonical form.
+**Status:** `IMPLEMENTED+TESTED`
+JSON-LD + PROV-O evidence pack export is `IMPLEMENTED+TESTED` (Phase 6 CP6.1/6.2/6.4). PDF render is `IMPLEMENTED+TESTED` as of Phase 9 CP9.21a (renderer module, 24 tests, 100% line+branch coverage on `packages/export/pdf_renderer.py`) + CP9.21b (Accept-header content negotiation on GET /v1/evidence-packs, 17 endpoint tests). The PDF is a deterministic A4 rendering of the same pack content bound by `root_hash` so a regulator can hand the PDF to a forensic accountant and the JSON-LD to a developer in parallel and they agree on every fact. Filename includes the first 12 chars of `root_hash`; response carries `X-Forensa-Root-Hash` header for direct cross-check against the JSON-LD form.
+**Architecture component:** packages/export (builder + schema + pdf_renderer); apps/api/routes/evidence.py
+**Test coverage:** 24 unit on PDF renderer + 17 endpoint on Accept-header content negotiation + 6 existing JSON-LD endpoint + integration on JSON-LD generation and `verify_evidence_pack` (25 export tests) = 72 evidence-pack tests total.
+**Gap vs spec:** None for hackathon scope. Detached platform signature on the pack (so an auditor can verify pack-level provenance without re-rendering) is `TRACKED-P11.6` for both wire forms.
 
 ### BR-06 - Merkle-chained ledger with RFC 3161 TSA
 **Status:** `PARTIAL`
@@ -150,6 +150,7 @@ Each BR maps to architecture component + test suite. See `docs/17_traceability_m
 
 | Date | Change |
 |---|---|
+| 15 May 2026 07:10 | CP9.21a + CP9.21b landed. BR-05 flips PARTIAL -> IMPLEMENTED+TESTED. PDF render module (`packages/export/pdf_renderer.py`, 330 LOC) + Accept-header content negotiation on `GET /v1/evidence-packs`. Headline scoreboard moves to 9/13 IMPLEMENTED+TESTED. Closes the CP6.3 deferral carried since Phase 6 (14 May 02:47-03:20) and the Enterprise-Grade Review section 3.17 item 1 finding (No PDF rendering). 41 new tests at 100% coverage (24 renderer + 17 endpoint). 837 total default tests after this commit. |
 | 12 May 2026 | v1 BRD frozen with 13 BRs |
 | 14 May 2026 09:58 | Status column added per EnterpriseGradeReview_Claude review fix #10. Headline: 4 IMPLEMENTED+TESTED / 4 PARTIAL / 2 STUB / 3 DEFERRED. Status of BR-10 and BR-11 will move to IMPLEMENTED after Phase 9 CP9.1 lands in this same session. |
 | 14 May 2026 20:07 | CP9.16-PG-up landed (HEAD `099afdb`). BR-01 narrative updated to reference DB-level append-only triggers verified on real PostgreSQL 16.13 via 14 new tests in `tests/integration/`. No BR status code change (BR-01 was already IMPLEMENTED+TESTED). Closes 3 honest gaps from CP9.15.1 named in the Enterprise-Grade Review: migration round-trip on real PG, partial UNIQUE concurrency test, trigger-level UPDATE/DELETE rejection. |

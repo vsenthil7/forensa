@@ -118,8 +118,31 @@ $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $dstName = "end-to-end-$stamp.webm"
 $dstMain = Join-Path $demoDir $dstName
 $dstBackup = Join-Path $backupDir $dstName
-Copy-Item $src.FullName $dstMain -Force
-Copy-Item $src.FullName $dstBackup -Force
+
+# Trim the first 1 second of the recording with ffmpeg to drop
+# the chromium initial-paint blank-white frame that playwright's
+# recorder captures before our about:blank handler runs.
+#
+# Note: -c copy + -ss works at keyframe boundaries; chromium's
+# webm recorder emits the first keyframe AS the blank frame, so
+# stream-copy can't drop it cleanly. We re-encode with libvpx
+# (the same codec) at high quality. Cost: ~5s of extra encoding
+# time. Falls back to copy if ffmpeg is unavailable.
+if (Get-Command ffmpeg -ErrorAction SilentlyContinue) {
+    Write-Host '  trimming leading 1.0s (chromium pre-paint frame) via ffmpeg re-encode' -ForegroundColor Cyan
+    & ffmpeg -y -ss 1.0 -i $src.FullName -c:v libvpx -b:v 1M -crf 10 -an $dstMain 2>&1 | Out-Null
+    if ((Test-Path $dstMain) -and ((Get-Item $dstMain).Length -gt 0)) {
+        Copy-Item $dstMain $dstBackup -Force
+    } else {
+        Write-Host '  ffmpeg trim failed - falling back to copy' -ForegroundColor Yellow
+        Copy-Item $src.FullName $dstMain -Force
+        Copy-Item $src.FullName $dstBackup -Force
+    }
+} else {
+    Write-Host '  ffmpeg not on PATH - skipping leading-frame trim' -ForegroundColor Yellow
+    Copy-Item $src.FullName $dstMain -Force
+    Copy-Item $src.FullName $dstBackup -Force
+}
 Set-Content -Path (Join-Path $resultsDir 'latest.txt') -Value $dstMain -Encoding ASCII
 Write-Host "  active : $dstMain"
 Write-Host "  backup : $dstBackup"

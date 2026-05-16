@@ -83,6 +83,10 @@ src/logs/
 *.key
 *.p12
 *.pfx
+# ...except public TSA test fixtures (FreeTSA publishes them at
+# https://freetsa.org/files/cacert.pem — not a secret).
+!tests/fixtures/**/*.pem
+!tests/fixtures/**/*.crt
 
 # Database
 *.db
@@ -112,6 +116,7 @@ tmp/
 .demo_run.err
 .demo_run.pid
 .probe_*.py
+.freetsa_*
 
 # Forensa: never commit raw evidence packs
 dossiers/

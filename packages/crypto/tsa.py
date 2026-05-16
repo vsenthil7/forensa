@@ -59,6 +59,7 @@ __all__ = [
     "TimestampClient",
     "TimestampClientError",
     "TimestampResponse",
+    "verify_rfc3161_timestamp_response",
     "verify_timestamp_response",
 ]
 
@@ -409,6 +410,14 @@ def verify_timestamp_response(
     Used by regulators to prove that the anchored root existed at the
     claimed timestamp. Non-raising: returns False on any verification
     failure including malformed inputs.
+
+    Mock-TSA only: this routine verifies the Ed25519 signature scheme
+    that ``MockTimestampClient`` uses. For real RFC 3161 responses
+    (produced by ``Rfc3161TimestampClient``), the ``signature`` field
+    carries sha256(tsr_bytes) not an Ed25519 signature, so this function
+    will return False. Use :func:`verify_rfc3161_timestamp_response`
+    instead, which performs full PKIX cert-chain validation against the
+    TSA's certificate.
     """
     if len(tsa_public_key) != 32:
         return False
@@ -419,3 +428,112 @@ def verify_timestamp_response(
     from packages.crypto.sign import verify as ed25519_verify
 
     return ed25519_verify(tsa_public_key, payload_bytes, response.signature)
+
+
+def verify_rfc3161_timestamp_response(
+    response: TimestampResponse,
+    *,
+    tsa_cert_pem: bytes,
+    root_cert_pem: bytes,
+    intermediate_cert_pems: list[bytes] | None = None,
+) -> bool:
+    """PKIX verify an RFC 3161 ``TimestampResponse`` against a TSA cert chain.
+
+    Reconstructs the TimeStampResp from ``response.tsr_bytes`` and
+    verifies via :class:`rfc3161_client.VerifierBuilder`:
+
+    1. The TSR's CMS signature is valid under ``tsa_cert_pem``.
+    2. The TSA cert chains up to ``root_cert_pem`` via any intermediates
+       in ``intermediate_cert_pems``.
+    3. The TSR's MessageImprint matches sha256(hashed_root.encode("ascii")) -
+       the same imprint shape :class:`Rfc3161TimestampClient` produces.
+
+    Returns True iff all three hold. Non-raising: returns False on any
+    failure (decode error, signature mismatch, cert chain failure,
+    imprint mismatch, missing dep).
+
+    Used by regulators / auditors to independently verify Forensa's
+    persisted ``timestamp_anchors.tsr_bytes`` blobs against the TSA's
+    published certificate chain. For FreeTSA the certs live at
+    https://freetsa.org/files/tsa.crt and
+    https://freetsa.org/files/cacert.pem.
+
+    Parameters
+    ----------
+    response
+        The Forensa ``TimestampResponse`` to verify. ``tsr_bytes`` must
+        be real RFC 3161 DER (produced by ``Rfc3161TimestampClient``,
+        not the mock).
+    tsa_cert_pem
+        PEM-encoded TSA signing certificate. For FreeTSA this is the
+        contents of https://freetsa.org/files/tsa.crt.
+    root_cert_pem
+        PEM-encoded root CA certificate. REQUIRED by
+        :class:`rfc3161_client.VerifierBuilder`. For FreeTSA this is
+        the contents of https://freetsa.org/files/cacert.pem.
+    intermediate_cert_pems
+        Optional list of PEM-encoded intermediate certificates. Empty
+        for FreeTSA (its chain is TSA cert -> root, no intermediates).
+    """
+    # Lazy-import so test envs without rfc3161-client don't break
+    # importing this module.
+    try:
+        import rfc3161_client
+    except ImportError:  # pragma: no cover - dep is declared
+        return False
+
+    # PEM -> x509.Certificate via cryptography (already a project dep).
+    try:
+        from cryptography import x509
+    except ImportError:  # pragma: no cover - dep is declared
+        return False
+
+    try:
+        tsa_cert = x509.load_pem_x509_certificate(tsa_cert_pem)
+    except Exception:
+        return False
+
+    intermediates_x509 = []
+    if intermediate_cert_pems:
+        try:
+            intermediates_x509 = [x509.load_pem_x509_certificate(p) for p in intermediate_cert_pems]
+        except Exception:
+            return False
+
+    try:
+        root_x509 = x509.load_pem_x509_certificate(root_cert_pem)
+    except Exception:
+        return False
+
+    # Reconstruct the TimeStampResp from persisted DER bytes.
+    try:
+        ts_resp = rfc3161_client.decode_timestamp_response(response.tsr_bytes)
+    except Exception:
+        return False
+
+    # Build the verifier with the cert chain.
+    try:
+        builder = (
+            rfc3161_client.VerifierBuilder()
+            .tsa_certificate(tsa_cert)
+            .add_root_certificate(root_x509)
+        )
+        for ic in intermediates_x509:
+            builder = builder.add_intermediate_certificate(ic)
+        verifier = builder.build()
+    except Exception:
+        return False
+
+    # Verifier.verify_message(timestamp_response, message) hashes the
+    # message under the imprint's hash algorithm and compares to the
+    # MessageImprint inside the TSR. Forensa's Rfc3161TimestampClient
+    # builds the imprint by feeding ``hashed_root.encode("ascii")`` to
+    # the library's builder, which then sha256s it. We reproduce the
+    # same input here; the library re-hashes it and compares to the
+    # imprint. The check passes only when the persisted tsr_bytes
+    # really corresponds to this hashed_root.
+    imprint_input = response.hashed_root.encode("ascii")
+    try:
+        return bool(verifier.verify_message(ts_resp, imprint_input))
+    except Exception:
+        return False

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import pathlib
 from datetime import UTC, datetime
 
 import pytest
@@ -15,6 +17,7 @@ from packages.crypto.tsa import (
     TimestampClient,
     TimestampClientError,
     TimestampResponse,
+    verify_rfc3161_timestamp_response,
     verify_timestamp_response,
 )
 
@@ -540,3 +543,152 @@ def test_verify_subclass_abstract_method_must_be_implemented():
     """TimestampClient is abstract - direct instantiation raises."""
     with pytest.raises(TypeError):
         TimestampClient()  # type: ignore[abstract]
+
+
+# ---------------------------------------------------------------------------
+# verify_rfc3161_timestamp_response - PKIX cert-chain verification
+# ---------------------------------------------------------------------------
+# Bundled FreeTSA cert chain lives at tests/fixtures/freetsa/{tsa.crt,cacert.pem}.
+# Live integration test (test_verify_rfc3161_against_live_freetsa_pkix_chain)
+# is gated on FORENSA_USE_REAL_TSA_TESTS=1; unit tests use a synthetic
+# TimestampResponse to exercise the input-validation paths.
+
+
+_FIXTURES_DIR = pathlib.Path(__file__).parents[1] / "fixtures" / "freetsa"
+
+
+def _read_freetsa_tsa_cert() -> bytes:
+    return (_FIXTURES_DIR / "tsa.crt").read_bytes()
+
+
+def _read_freetsa_root_cert() -> bytes:
+    return (_FIXTURES_DIR / "cacert.pem").read_bytes()
+
+
+def _make_mock_rfc3161_response() -> TimestampResponse:
+    """A TimestampResponse with the shape Rfc3161TimestampClient produces,
+    but tsr_bytes that won't decode as real DER. Used by paths that test
+    failure modes before the cert/decode step."""
+    return TimestampResponse(
+        tsa_identifier="freetsa.org",
+        tsr_bytes=b"\x30\x82\x00\x00",  # SEQUENCE header but invalid body
+        timestamped_at=datetime.now(UTC),
+        hashed_root=_VALID_HASH,
+        signature=b"\x00" * 32,  # sha256 fingerprint placeholder
+    )
+
+
+def test_verify_rfc3161_returns_false_for_malformed_tsa_cert():
+    """Garbage PEM in tsa_cert_pem surfaces as False, not an exception."""
+    resp = _make_mock_rfc3161_response()
+    assert not verify_rfc3161_timestamp_response(
+        resp,
+        tsa_cert_pem=b"not a real PEM",
+        root_cert_pem=_read_freetsa_root_cert(),
+    )
+
+
+def test_verify_rfc3161_returns_false_for_malformed_root_cert():
+    """Garbage PEM in root_cert_pem surfaces as False."""
+    resp = _make_mock_rfc3161_response()
+    assert not verify_rfc3161_timestamp_response(
+        resp,
+        tsa_cert_pem=_read_freetsa_tsa_cert(),
+        root_cert_pem=b"not a real PEM",
+    )
+
+
+def test_verify_rfc3161_returns_false_for_malformed_intermediate_cert():
+    """Garbage PEM in any intermediate surfaces as False."""
+    resp = _make_mock_rfc3161_response()
+    assert not verify_rfc3161_timestamp_response(
+        resp,
+        tsa_cert_pem=_read_freetsa_tsa_cert(),
+        root_cert_pem=_read_freetsa_root_cert(),
+        intermediate_cert_pems=[b"not a real PEM"],
+    )
+
+
+def test_verify_rfc3161_returns_false_for_garbage_tsr_bytes():
+    """A TimestampResponse whose tsr_bytes don't decode as DER -> False."""
+    resp = TimestampResponse(
+        tsa_identifier="freetsa.org",
+        tsr_bytes=b"this is definitely not asn1 der",
+        timestamped_at=datetime.now(UTC),
+        hashed_root=_VALID_HASH,
+        signature=b"\x00" * 32,
+    )
+    assert not verify_rfc3161_timestamp_response(
+        resp,
+        tsa_cert_pem=_read_freetsa_tsa_cert(),
+        root_cert_pem=_read_freetsa_root_cert(),
+    )
+
+
+def test_verify_rfc3161_returns_false_when_mock_tsr_bytes_used():
+    """A MockTimestampClient produces JSON-shaped tsr_bytes, not DER.
+    The PKIX verifier must return False (NOT crash) for these."""
+    import asyncio
+
+    async def _go() -> TimestampResponse:
+        mc = MockTimestampClient()
+        return await mc.request_timestamp(_VALID_HASH)
+
+    mock_resp = asyncio.run(_go())
+    assert not verify_rfc3161_timestamp_response(
+        mock_resp,
+        tsa_cert_pem=_read_freetsa_tsa_cert(),
+        root_cert_pem=_read_freetsa_root_cert(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_verify_rfc3161_against_live_freetsa_pkix_chain():
+    """LIVE: fetch a TSR from FreeTSA and PKIX-verify against the bundled
+    cert chain in tests/fixtures/freetsa/. Proves the end-to-end story:
+
+      Forensa -> Rfc3161TimestampClient -> FreeTSA -> TimestampResponse
+      Regulator -> verify_rfc3161_timestamp_response -> True
+
+    Gated on FORENSA_USE_REAL_TSA_TESTS=1 so CI doesn't hammer FreeTSA.
+    """
+    if os.environ.get("FORENSA_USE_REAL_TSA_TESTS") != "1":
+        pytest.skip("FORENSA_USE_REAL_TSA_TESTS not set; skipping live PKIX test")
+
+    client = Rfc3161TimestampClient(endpoint_url="https://freetsa.org/tsr", timeout_seconds=30.0)
+    response = await client.request_timestamp(_VALID_HASH)
+
+    # Positive: real TSR + correct cert chain -> True.
+    assert verify_rfc3161_timestamp_response(
+        response,
+        tsa_cert_pem=_read_freetsa_tsa_cert(),
+        root_cert_pem=_read_freetsa_root_cert(),
+    )
+
+    # Negative: tampered hashed_root -> False (imprint mismatch).
+    tampered = TimestampResponse(
+        tsa_identifier=response.tsa_identifier,
+        tsr_bytes=response.tsr_bytes,
+        timestamped_at=response.timestamped_at,
+        hashed_root="0" * 64,  # wrong digest
+        signature=response.signature,
+    )
+    assert not verify_rfc3161_timestamp_response(
+        tampered,
+        tsa_cert_pem=_read_freetsa_tsa_cert(),
+        root_cert_pem=_read_freetsa_root_cert(),
+    )
+
+    # Negative: tampered tsr_bytes -> False (CMS decode/signature fails).
+    tampered_tsr = TimestampResponse(
+        tsa_identifier=response.tsa_identifier,
+        tsr_bytes=response.tsr_bytes[:-4] + b"XXXX",  # corrupt last 4 bytes
+        timestamped_at=response.timestamped_at,
+        hashed_root=response.hashed_root,
+        signature=response.signature,
+    )
+    assert not verify_rfc3161_timestamp_response(
+        tampered_tsr,
+        tsa_cert_pem=_read_freetsa_tsa_cert(),
+        root_cert_pem=_read_freetsa_root_cert(),
+    )

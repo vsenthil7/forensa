@@ -1,40 +1,28 @@
 # syntax=docker/dockerfile:1.7
 #
-# CP9.61 - rewrote console Dockerfile for compose stack.
-# Previous bug: separate deps stage installed into apps/console/node_modules
-# but the builder copy didn't preserve workspace hoisted layout, so
-# `pnpm exec next build` failed to resolve `next` binary.
-# Fix: single builder stage installs from workspace root using
-# pnpm install --filter @forensa/console.
+# CP9.61 - dev-mode console Dockerfile for compose stack.
+# This is the DEV target. For production builds (Phase 12+), a
+# separate Dockerfile with `output: 'standalone'` + multi-stage
+# builder will be used. For now compose runs dev mode which is the
+# canonical hackathon-to-Monday-demo path.
+#
+# Previous bug (resolved): the multi-stage builder tried to copy
+# node_modules between stages, but pnpm workspace symlinks broke
+# across the COPY boundary. Single-stage avoids the issue entirely.
 
-FROM node:22-alpine AS builder
+FROM node:22-alpine AS dev
 RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
 WORKDIR /repo
 
-# Copy workspace files first so install layer caches well
-COPY pnpm-workspace.yaml pnpm-lock.yaml package.json* ./
+# Install deps at workspace root (pnpm handles hoisting + symlinks)
+COPY pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY apps/console/package.json apps/console/
+RUN pnpm install --frozen-lockfile=false
 
-# Install dependencies for the console workspace
-RUN pnpm install --filter @forensa/console --frozen-lockfile=false
-
-# Now copy source and build
+# Copy source (compose mounts these as volumes for hot-reload)
 COPY apps/console ./apps/console
 
-# Build the standalone Next.js output (next.config.mjs has output: 'standalone')
-RUN cd apps/console && pnpm exec next build
-
-# --------------------------------------------------------------- runtime
-FROM node:22-alpine AS runtime
-ENV NODE_ENV=production PORT=3000 HOSTNAME=0.0.0.0
-RUN addgroup -S forensa && adduser -S forensa -G forensa
-WORKDIR /app
-
-# Next standalone output bundles server.js + minimal node_modules at this path
-COPY --from=builder --chown=forensa:forensa /repo/apps/console/.next/standalone ./
-COPY --from=builder --chown=forensa:forensa /repo/apps/console/.next/static ./apps/console/.next/static
-COPY --from=builder --chown=forensa:forensa /repo/apps/console/public ./apps/console/public
-
-USER forensa
+WORKDIR /repo/apps/console
+ENV NODE_ENV=development PORT=3000 HOSTNAME=0.0.0.0
 EXPOSE 3000
-CMD ["node", "apps/console/server.js"]
+CMD ["pnpm", "exec", "next", "dev", "-p", "3000"]

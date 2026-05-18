@@ -96,7 +96,7 @@ services:
     build:
       context: .
       dockerfile: apps/console/Dockerfile
-      target: runtime
+      target: dev
     container_name: forensa-console
     restart: unless-stopped
     environment:

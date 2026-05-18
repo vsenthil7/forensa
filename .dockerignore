@@ -63,3 +63,8 @@ docs
 
 # Review artefacts and scripts that are not part of the runtime image
 scripts/test_api_keys.py
+
+# CP9.61 belt-and-braces: explicit nested workspace node_modules
+apps/**/node_modules
+apps/console/.next
+apps/console/coverage

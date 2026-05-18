@@ -74,6 +74,11 @@ services:
     restart: unless-stopped
     environment:
       FORENSA_DB_URL: postgresql+asyncpg://${POSTGRES_USER:-forensa}:${POSTGRES_PASSWORD:-forensa_dev_pw}@postgres:5432/${POSTGRES_DB:-forensa}
+      # HMAC bearer auth (CP9.18b / BR-02). Per-tenant secret; dev defaults
+      # in .env.compose for the demo tenant. Phase 11 (CP11.1) moves the
+      # secret to KMS.
+      FORENSA_HMAC_SECRET: ${FORENSA_HMAC_SECRET}
+      FORENSA_HMAC_TENANT_ID: ${FORENSA_HMAC_TENANT_ID}
       FORENSA_GEMINI_API_KEY: ${FORENSA_GEMINI_API_KEY:-}
       FORENSA_GEMINI_MODEL_ID: ${FORENSA_GEMINI_MODEL_ID:-gemini-2.5-pro}
       ENVIRONMENT: ${ENVIRONMENT:-development}

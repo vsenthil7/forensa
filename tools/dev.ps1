@@ -1,8 +1,8 @@
 # Forensa - dev orchestration helper
 #
-# CP9.61 - wraps `docker compose` with the canonical --env-file argument
-# so callers don't have to remember it. Matches the MendoraCI ergonomic
-# pattern (single entry point per dev op).
+# CP9.61 / CP9.61b - wraps `docker compose` with the canonical --env-file
+# argument so callers don't have to remember it. Matches the MendoraCI
+# ergonomic pattern (single entry point per dev op).
 #
 # Usage from repo root:
 #   .\tools\dev.ps1 up         # bring stack up detached
@@ -12,15 +12,17 @@
 #   .\tools\dev.ps1 logs       # tail all services
 #   .\tools\dev.ps1 logs api   # tail one service
 #   .\tools\dev.ps1 build      # rebuild images without cache
-#   .\tools\dev.ps1 health     # poll /healthz + console root
+#   .\tools\dev.ps1 health     # poll /healthz + console root + authed /v1/anchors
 #   .\tools\dev.ps1 psql       # interactive psql shell inside the postgres container
 #   .\tools\dev.ps1 migrate    # re-run alembic upgrade head (idempotent)
 #   .\tools\dev.ps1 status     # one-line status of all services + ports
+#   .\tools\dev.ps1 token      # mint a Bearer token for the demo tenant (CP9.61b)
+#   .\tools\dev.ps1 demo       # one-shot: mint token + curl every authed surface (CP9.61b)
 
 [CmdletBinding()]
 param(
   [Parameter(Position = 0, Mandatory = $true)]
-  [ValidateSet("up","down","down-v","ps","logs","build","health","psql","migrate","status","restart","help")]
+  [ValidateSet("up","down","down-v","ps","logs","build","health","psql","migrate","status","restart","token","demo","help")]
   [string]$Action,
   [Parameter(Position = 1, ValueFromRemainingArguments = $true)]
   [string[]]$Rest
@@ -51,6 +53,13 @@ function Get-Ports {
     if ($envText -match "(?m)^${var}=(\S+)") { $ports[$var] = $matches[1] }
   }
   return $ports
+}
+
+function Get-DemoToken {
+  # Mints inside the running forensa-api container using scripts/mint_demo_token.py.
+  # PYTHONPATH=/app + cwd=/app makes `from apps.api.auth.token import ...` resolve.
+  $output = docker exec -e PYTHONPATH=/app -w /app forensa-api python /app/scripts/mint_demo_token.py
+  return $output
 }
 
 switch ($Action) {
@@ -98,6 +107,15 @@ switch ($Action) {
       $r = Invoke-WebRequest -Uri "http://localhost:$consolePort" -UseBasicParsing -TimeoutSec 5
       Write-Host ("  HTTP " + $r.StatusCode + " (" + $r.Content.Length + " bytes)")
     } catch { Write-Host ("  ERROR: " + $_.Exception.Message) -ForegroundColor Red }
+    Write-Host ""
+    Write-Host "[dev.ps1] authed /v1/anchors smoke (Bearer minted via scripts/mint_demo_token.py)"
+    try {
+      $token = Get-DemoToken
+      $envText = Get-Content $EnvFile -Raw
+      $tenant = if ($envText -match "(?m)^FORENSA_HMAC_TENANT_ID=(\S+)") { $matches[1] } else { "" }
+      $r = Invoke-WebRequest -Uri ("http://localhost:$apiPort/v1/anchors?tenant_id=$tenant") -UseBasicParsing -TimeoutSec 5 -Headers @{ "Authorization" = ("Bearer " + $token) }
+      Write-Host ("  HTTP " + $r.StatusCode + " :: " + $r.Content)
+    } catch { Write-Host ("  ERROR: " + $_.Exception.Message) -ForegroundColor Red }
   }
   "psql" {
     $envText = Get-Content $EnvFile -Raw
@@ -127,6 +145,32 @@ switch ($Action) {
       & docker compose @EnvArgs restart $Rest
     } else {
       & docker compose @EnvArgs restart
+    }
+  }
+  "token" {
+    Write-Host (Get-DemoToken)
+  }
+  "demo" {
+    $ports = Get-Ports
+    $apiPort = $ports.API_HOST_PORT
+    $envText = Get-Content $EnvFile -Raw
+    $tenant = if ($envText -match "(?m)^FORENSA_HMAC_TENANT_ID=(\S+)") { $matches[1] } else { "" }
+    $token = Get-DemoToken
+    Write-Host ("[dev.ps1] minted token for tenant " + $tenant.Substring(0,8) + "...")
+    Write-Host ""
+    $surfaces = @("anchors","receipts","metrics")
+    foreach ($s in $surfaces) {
+      $url = "http://localhost:$apiPort/v1/$s?tenant_id=$tenant"
+      Write-Host ("=== GET /v1/" + $s + " ===") -ForegroundColor Cyan
+      try {
+        $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5 -Headers @{ "Authorization" = ("Bearer " + $token) }
+        Write-Host ("HTTP " + $r.StatusCode)
+        Write-Host $r.Content
+      } catch {
+        Write-Host ("Status: " + $_.Exception.Response.StatusCode) -ForegroundColor Red
+        Write-Host $_.ErrorDetails.Message
+      }
+      Write-Host ""
     }
   }
   "help" {

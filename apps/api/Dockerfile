@@ -12,6 +12,9 @@
 # NEW-P9.8.30: a sibling .dockerignore excludes _backup, .git, .venv,
 # __pycache__, node_modules etc. to keep the build context small.
 #
+# CP9.61: invoke via python -m to dodge poetry's absolute-path shebang
+# in /build/.venv. Also adds scripts/ COPY so mint_demo_token.py is reachable.
+#
 # Still TRACKED / not closed in CP9.10:
 # - pip-audit step in builder (NEW-P9.8.28, Phase 13)
 # - SBOM generation (top-20 #19, Phase 13)
@@ -44,6 +47,7 @@ RUN poetry install --only main --no-interaction --no-ansi --no-root
 COPY packages ./packages
 COPY apps ./apps
 COPY tools ./tools
+COPY scripts ./scripts
 COPY alembic.ini ./alembic.ini
 COPY alembic ./alembic
 

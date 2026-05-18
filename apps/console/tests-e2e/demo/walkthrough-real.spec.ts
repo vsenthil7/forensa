@@ -59,17 +59,14 @@ async function pulseRow(loc: Locator, ms = 1200) {
   await loc.page().waitForTimeout(ms)
 }
 
-// Bridge env-supplied bearer token into the page so apiFetch puts it in
-// the Authorization header. This is how the console knows which tenant
-// the user belongs to in dev mode.
-async function wireAuthIntoPage(page: Page) {
-  await page.evaluate(({ token, tenant, api }) => {
-    try {
-      localStorage.setItem('forensa.token', token)
-      localStorage.setItem('forensa.tenant_id', tenant)
-      localStorage.setItem('forensa.api_url', api)
-    } catch {}
-  }, { token: TOKEN, tenant: TENANT_ID, api: API })
+// Inject Authorization header into every request the page makes.
+// The console's apiFetch reads NEXT_PUBLIC_FORENSA_TOKEN at BUILD TIME,
+// which is empty in the compose-built bundle. setExtraHTTPHeaders attaches
+// the bearer at the network layer, which the api accepts.
+async function wireAuthIntoContext(page: Page) {
+  await page.context().setExtraHTTPHeaders({ Authorization: `Bearer ${TOKEN}` })
+  // Make sure navigator.onLine reads true (Playwright sometimes spawns offline).
+  await page.context().setOffline(false)
 }
 
 test.describe('Forensa real-user-action walkthrough (5 scenarios)', () => {
@@ -114,10 +111,10 @@ test.describe('Forensa real-user-action walkthrough (5 scenarios)', () => {
     })
     await hideCaption(page)
 
-    // Navigate to /receipts with the seeded tenant
+    // Wire auth BEFORE first navigation so the console's initial API
+    // calls already carry the bearer header.
+    await wireAuthIntoContext(page)
     await page.goto(`${CONSOLE}/receipts?tenant_id=${TENANT_ID}`, { waitUntil: 'domcontentloaded' })
-    await wireAuthIntoPage(page)
-    await page.reload({ waitUntil: 'domcontentloaded' })
 
     // Wait for the timeline to load
     const timelineTable = page.locator('[data-testid="receipts-timeline-table"]')

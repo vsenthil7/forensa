@@ -26,7 +26,7 @@
 import { test, expect, type Page, type Locator } from '@playwright/test'
 import { showCaption, hideCaption, showTitleCard } from './caption-overlay'
 
-const CONSOLE = process.env.FORENSA_CONSOLE_URL ?? 'http://localhost:3001'
+const CONSOLE = process.env.FORENSA_CONSOLE_URL ?? 'http://localhost:3000'
 const API = process.env.FORENSA_API_URL ?? 'http://localhost:8000'
 const TENANT_ID = process.env.FORENSA_TENANT_ID ?? ''
 const TOKEN = process.env.FORENSA_TOKEN ?? ''
@@ -59,13 +59,10 @@ async function pulseRow(loc: Locator, ms = 1200) {
   await loc.page().waitForTimeout(ms)
 }
 
-// Inject Authorization header into every request the page makes.
-// The console's apiFetch reads NEXT_PUBLIC_FORENSA_TOKEN at BUILD TIME,
-// which is empty in the compose-built bundle. setExtraHTTPHeaders attaches
-// the bearer at the network layer, which the api accepts.
+// The host dev server boots with NEXT_PUBLIC_FORENSA_TOKEN baked in,
+// so apiFetch attaches Authorization automatically on every fetch.
+// We only need to force the page online (Playwright can spawn offline).
 async function wireAuthIntoContext(page: Page) {
-  await page.context().setExtraHTTPHeaders({ Authorization: `Bearer ${TOKEN}` })
-  // Make sure navigator.onLine reads true (Playwright sometimes spawns offline).
   await page.context().setOffline(false)
 }
 

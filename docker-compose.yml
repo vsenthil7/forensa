@@ -1,0 +1,125 @@
+# Forensa - Enterprise-grade local-dev orchestration
+#
+# CP9.61 - closes NFR-deployment-local (production-like local dev stack)
+# matching the MendoraCI pattern: postgres + api-migrate + api + console
+# behind named volumes with restart policies and healthchecks.
+#
+# Run with:
+#   docker compose --env-file .env.compose up -d
+#   docker compose --env-file .env.compose logs -f api
+#   docker compose --env-file .env.compose down
+#
+# Helper: tools/dev.ps1 wraps these.
+#
+# Port strategy (avoids MendoraCI clashes):
+#   - postgres: 5433 (host) -> 5432 (container)  [MendoraCI uses 5432]
+#   - api:      8000        [unique]
+#   - console:  3001 (host) -> 3000 (container)  [MendoraCI uses 3000]
+#
+# Inside the docker network, services use service names: api talks to
+# "postgres" not "localhost:5433".
+
+name: forensa
+
+services:
+
+  # ---------------------------------------------------------------- postgres
+  postgres:
+    image: postgres:16-alpine
+    container_name: forensa-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-forensa}
+      POSTGRES_USER: ${POSTGRES_USER:-forensa}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-forensa_dev_pw}
+    volumes:
+      - forensa-pg-data:/var/lib/postgresql/data
+      - ./infra/sql:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  # ---------------------------------------------------------- api-migrate
+  # One-shot alembic upgrade head. Exits 0 on success; api waits on this
+  # via `service_completed_successfully`. Re-running compose up re-runs
+  # this; alembic is idempotent so this is safe.
+  api-migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: builder
+    container_name: forensa-api-migrate
+    restart: "no"
+    environment:
+      FORENSA_DB_URL: postgresql+asyncpg://${POSTGRES_USER:-forensa}:${POSTGRES_PASSWORD:-forensa_dev_pw}@postgres:5432/${POSTGRES_DB:-forensa}
+      # Sync DSN for alembic (it uses a sync driver internally)
+      ALEMBIC_DB_URL: postgresql://${POSTGRES_USER:-forensa}:${POSTGRES_PASSWORD:-forensa_dev_pw}@postgres:5432/${POSTGRES_DB:-forensa}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["poetry", "run", "alembic", "upgrade", "head"]
+
+  # ----------------------------------------------------------------- api
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: runtime
+    container_name: forensa-api
+    restart: unless-stopped
+    environment:
+      FORENSA_DB_URL: postgresql+asyncpg://${POSTGRES_USER:-forensa}:${POSTGRES_PASSWORD:-forensa_dev_pw}@postgres:5432/${POSTGRES_DB:-forensa}
+      FORENSA_GEMINI_API_KEY: ${FORENSA_GEMINI_API_KEY:-}
+      FORENSA_GEMINI_MODEL_ID: ${FORENSA_GEMINI_MODEL_ID:-gemini-2.5-pro}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api-migrate:
+        condition: service_completed_successfully
+    ports:
+      - "${API_HOST_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+
+  # -------------------------------------------------------------- console
+  console:
+    build:
+      context: .
+      dockerfile: apps/console/Dockerfile
+      target: runtime
+    container_name: forensa-console
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      # The console talks to the api by service name inside the docker
+      # network. For client-side fetch() from the browser we'd need a
+      # NEXT_PUBLIC_API_BASE_URL env at BUILD time, but the current console
+      # uses relative /v1/* paths fronted by Next's rewrites if configured.
+      # For now we expose the API on host:8000 and the user hits localhost:8000
+      # for API calls directly.
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:${API_HOST_PORT:-8000}
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${CONSOLE_HOST_PORT:-3001}:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 15s
+
+volumes:
+  forensa-pg-data:
+    name: forensa-pg-data

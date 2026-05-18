@@ -85,7 +85,8 @@ function Find-WalkthroughRecording {
 
 # 2) TRUNCATE - drop all tenant data for clean pass-1 empty state
 Write-Host '[walkthrough] 2/6 truncating tenant tables for clean empty state' -ForegroundColor Cyan
-$truncateSql = "DO \$\$ BEGIN EXECUTE (SELECT string_agg('TRUNCATE TABLE ' || quote_ident(tablename) || ' CASCADE;', ' ') FROM pg_tables WHERE schemaname='public' AND tablename NOT IN ('alembic_version')); END \$\$;"
+# Simple multi-statement truncate via -c. Order doesn't matter with CASCADE.
+$truncateSql = "TRUNCATE TABLE receipts, events, timestamp_anchors, ma_export_jobs, policy_bundle_approvals, idempotency_records, policy_bundles, policy_snapshots, agents, tenants CASCADE;"
 docker exec -e PGPASSWORD=forensa_dev_pw forensa-postgres psql -U forensa -d forensa -c $truncateSql 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) {
     Write-Host '  truncate had warnings - continuing' -ForegroundColor Yellow

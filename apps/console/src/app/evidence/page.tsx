@@ -1,5 +1,4 @@
-import Link from "next/link";
-import { EvidencePack } from "@/components/EvidencePack";
+import { EvidencePackToggle } from "@/components/EvidencePackToggle";
 
 const DEMO_TENANT_ID =
   process.env.NEXT_PUBLIC_FORENSA_DEMO_TENANT_ID ??
@@ -11,27 +10,27 @@ const DEFAULT_SCOPE_START = "2026-05-13T00:00:00+00:00";
 const DEFAULT_SCOPE_END = "2026-05-14T23:59:59+00:00";
 
 export default function EvidencePage() {
-  const scopeStart = process.env.NEXT_PUBLIC_FORENSA_SCOPE_START ?? DEFAULT_SCOPE_START;
-  const scopeEnd = process.env.NEXT_PUBLIC_FORENSA_SCOPE_END ?? DEFAULT_SCOPE_END;
+  const scopeStart =
+    process.env.NEXT_PUBLIC_FORENSA_SCOPE_START ?? DEFAULT_SCOPE_START;
+  const scopeEnd =
+    process.env.NEXT_PUBLIC_FORENSA_SCOPE_END ?? DEFAULT_SCOPE_END;
   return (
-    <main style={{ padding: "2rem", fontFamily: "system-ui, sans-serif" }}>
-      <p style={{ marginBottom: "1rem" }}>
-        <Link
-          href="/"
-          data-testid="evidence-back-link"
-          style={{ color: "#1e40af", textDecoration: "underline" }}
-        >
-          &larr; Back to receipts list
-        </Link>
-      </p>
+    <main data-testid="evidence-page">
       <h1>Evidence pack</h1>
-      <p style={{ fontSize: "0.95rem", color: "#374151", marginBottom: "1.5rem" }}>
-        Produce the tamper-evident regulator artifact for tenant{" "}
+      <p
+        style={{
+          fontSize: "0.95rem",
+          color: "#374151",
+          marginBottom: "1.5rem",
+          maxWidth: "40rem",
+        }}
+      >
+        Produce the tamper-evident regulator artefact for tenant{" "}
         <code style={{ fontFamily: "monospace" }}>{DEMO_TENANT_ID}</code>. The
-        pack binds every receipt in the window plus the day&apos;s RFC 3161
-        TSA proof under a single root hash.
+        pack binds every receipt in the window plus the day&apos;s RFC 3161 TSA
+        proof under a single root hash.
       </p>
-      <EvidencePack
+      <EvidencePackToggle
         tenantId={DEMO_TENANT_ID}
         scopeStart={scopeStart}
         scopeEnd={scopeEnd}

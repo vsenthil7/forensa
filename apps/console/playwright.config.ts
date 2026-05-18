@@ -96,8 +96,23 @@ export default defineConfig({
 
   projects: [
     {
-      name: 'chromium',
+      name: 'chromium-desktop',
       use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      // US-F31 AC-3: installable on iOS Safari. We can't drive
+      // the real Safari install prompt in Playwright, but the
+      // webkit project exercises the manifest/SW fetches and
+      // the responsive layout on a phone viewport.
+      name: 'webkit-mobile',
+      use: { ...devices['iPhone 15'] },
+    },
+    {
+      // US-F31 AC-3: installable on Android Chrome. Pixel 7
+      // gives a typical Android viewport + UA for the layout
+      // assertions.
+      name: 'chromium-android',
+      use: { ...devices['Pixel 7'] },
     },
   ],
 

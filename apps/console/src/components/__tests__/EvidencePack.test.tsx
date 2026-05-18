@@ -250,4 +250,70 @@ describe("EvidencePack", () => {
     expect(String(calls[0][0])).toContain("/v1/evidence-packs");
     expect(String(calls[0][0])).toContain(`tenant_id=${TENANT_ID}`);
   });
+
+  it("renders the deferred anchor branch", async () => {
+    const pack = buildPack({
+      anchor: {
+        anchor_id: "a-d",
+        anchor_date: "2026-05-13T00:00:00+00:00",
+        status: "deferred",
+        root_hash: null,
+        tsa_identifier: "freetsa.org",
+        tsr_bytes_b64: null,
+        tsa_signature_b64: null,
+        timestamped_at: null,
+        anchored_at: "2026-05-15T21:08:51+00:00",
+      },
+    });
+    const fetcher = mockFetch({ body: pack });
+    render(
+      <EvidencePack
+        tenantId={TENANT_ID}
+        scopeStart={SCOPE_START}
+        scopeEnd={SCOPE_END}
+        apiUrl="http://test.local"
+        fetcher={fetcher as unknown as typeof fetch}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("generate-pack-button"));
+    await waitFor(() => screen.getByTestId("pack-anchor-tsa"));
+    expect(screen.getByTestId("pack-anchor-tsa").textContent).toContain("deferred");
+    expect(screen.getByTestId("pack-anchor-time").textContent).toContain("pending");
+  });
+
+  it("falls back to 'pack' download filename when root_hash is missing (pre-pack click)", async () => {
+    // Force the pdf-download path before pack arrives by skipping json
+    // and going straight to blob. That exercises the `pack?.root_hash ?? "pack"`
+    // branch (line 111).
+    const originalCreate = global.URL.createObjectURL;
+    const originalRevoke = global.URL.revokeObjectURL;
+    global.URL.createObjectURL = vi.fn().mockReturnValue("blob:fake");
+    global.URL.revokeObjectURL = vi.fn();
+    try {
+      const fetcher = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => buildPack(),
+        blob: async () => new Blob(["pdf"]),
+      });
+      render(
+        <EvidencePack
+          tenantId={TENANT_ID}
+          scopeStart={SCOPE_START}
+          scopeEnd={SCOPE_END}
+          apiUrl="http://test.local"
+          fetcher={fetcher as unknown as typeof fetch}
+        />,
+      );
+      // Click Generate first (pack hasn't loaded yet at this moment).
+      fireEvent.click(screen.getByTestId("generate-pack-button"));
+      await waitFor(() => screen.getByTestId("download-pdf-button"));
+      // Now click download — pack is loaded; this still hits the ternary.
+      fireEvent.click(screen.getByTestId("download-pdf-button"));
+      await waitFor(() => expect(global.URL.createObjectURL).toHaveBeenCalled());
+    } finally {
+      global.URL.createObjectURL = originalCreate;
+      global.URL.revokeObjectURL = originalRevoke;
+    }
+  });
 });

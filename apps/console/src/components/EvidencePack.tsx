@@ -108,7 +108,12 @@ export function EvidencePack({ tenantId, scopeStart, scopeEnd, apiUrl, fetcher =
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      const rootHead = (pack?.root_hash ?? "pack").slice(0, 12);
+      // pack is guaranteed non-null here: the Download button only
+      // renders inside `state === "ok" && pack && (...)`. Guard for
+      // type-narrowing only.
+      /* v8 ignore next */
+      if (!pack) return;
+      const rootHead = pack.root_hash.slice(0, 12);
       a.download = `forensa-evidence-pack-${rootHead}.pdf`;
       document.body.appendChild(a);
       a.click();

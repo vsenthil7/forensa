@@ -28,7 +28,8 @@ param(
   [string[]]$Rest
 )
 
-$ErrorActionPreference = "Stop"
+# NOTE: NOT using $ErrorActionPreference = "Stop" globally because docker /
+# Invoke-WebRequest emit non-terminating warnings that cascade into Catch.
 
 # Resolve repo root from this script's location
 $RepoRoot = Split-Path -Parent $PSScriptRoot
@@ -60,6 +61,21 @@ function Get-DemoToken {
   # PYTHONPATH=/app + cwd=/app makes `from apps.api.auth.token import ...` resolve.
   $output = docker exec -e PYTHONPATH=/app -w /app forensa-api python /app/scripts/mint_demo_token.py
   return $output
+}
+
+function Invoke-AuthedGet {
+  param([string]$Url, [string]$Token)
+  # Use a clean try/catch with Stop scoped to just this call so PowerShell's
+  # default non-terminating-error noise from Invoke-WebRequest stays contained.
+  $ErrorActionPreference = "Stop"
+  try {
+    $r = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 5 -Headers @{ "Authorization" = ("Bearer " + $Token) }
+    return @{ ok = $true; status = $r.StatusCode; body = $r.Content }
+  } catch {
+    $code = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
+    $body = if ($_.ErrorDetails) { $_.ErrorDetails.Message } else { $_.Exception.Message }
+    return @{ ok = $false; status = $code; body = $body }
+  }
 }
 
 switch ($Action) {
@@ -98,24 +114,26 @@ switch ($Action) {
     $ports = Get-Ports
     $apiPort = $ports.API_HOST_PORT
     $consolePort = $ports.CONSOLE_HOST_PORT
-    Write-Host "[dev.ps1] api healthz (http://localhost:$apiPort/healthz)"
-    try { (Invoke-WebRequest -Uri "http://localhost:$apiPort/healthz" -UseBasicParsing -TimeoutSec 5).Content }
+    Write-Host "[dev.ps1] api healthz (http://localhost:${apiPort}/healthz)"
+    try { (Invoke-WebRequest -Uri "http://localhost:${apiPort}/healthz" -UseBasicParsing -TimeoutSec 5).Content }
     catch { Write-Host ("  ERROR: " + $_.Exception.Message) -ForegroundColor Red }
     Write-Host ""
-    Write-Host "[dev.ps1] console root (http://localhost:$consolePort)"
+    Write-Host "[dev.ps1] console root (http://localhost:${consolePort})"
     try {
-      $r = Invoke-WebRequest -Uri "http://localhost:$consolePort" -UseBasicParsing -TimeoutSec 5
+      $r = Invoke-WebRequest -Uri "http://localhost:${consolePort}" -UseBasicParsing -TimeoutSec 5
       Write-Host ("  HTTP " + $r.StatusCode + " (" + $r.Content.Length + " bytes)")
     } catch { Write-Host ("  ERROR: " + $_.Exception.Message) -ForegroundColor Red }
     Write-Host ""
     Write-Host "[dev.ps1] authed /v1/anchors smoke (Bearer minted via scripts/mint_demo_token.py)"
-    try {
-      $token = Get-DemoToken
-      $envText = Get-Content $EnvFile -Raw
-      $tenant = if ($envText -match "(?m)^FORENSA_HMAC_TENANT_ID=(\S+)") { $matches[1] } else { "" }
-      $r = Invoke-WebRequest -Uri ("http://localhost:$apiPort/v1/anchors?tenant_id=$tenant") -UseBasicParsing -TimeoutSec 5 -Headers @{ "Authorization" = ("Bearer " + $token) }
-      Write-Host ("  HTTP " + $r.StatusCode + " :: " + $r.Content)
-    } catch { Write-Host ("  ERROR: " + $_.Exception.Message) -ForegroundColor Red }
+    $token = Get-DemoToken
+    $envText = Get-Content $EnvFile -Raw
+    $tenant = if ($envText -match "(?m)^FORENSA_HMAC_TENANT_ID=(\S+)") { $matches[1] } else { "" }
+    $result = Invoke-AuthedGet -Url ("http://localhost:" + $apiPort + "/v1/anchors?tenant_id=" + $tenant) -Token $token
+    if ($result.ok) {
+      Write-Host ("  HTTP " + $result.status + " :: " + $result.body)
+    } else {
+      Write-Host ("  HTTP " + $result.status + " :: " + $result.body) -ForegroundColor Red
+    }
   }
   "psql" {
     $envText = Get-Content $EnvFile -Raw
@@ -160,15 +178,17 @@ switch ($Action) {
     Write-Host ""
     $surfaces = @("anchors","receipts","metrics")
     foreach ($s in $surfaces) {
-      $url = "http://localhost:$apiPort/v1/$s?tenant_id=$tenant"
+      # Use string concat (NOT interpolation) so PowerShell doesn't try to
+      # parse `$s?tenant_id` as a variable name with a ? in it.
+      $url = "http://localhost:" + $apiPort + "/v1/" + $s + "?tenant_id=" + $tenant
       Write-Host ("=== GET /v1/" + $s + " ===") -ForegroundColor Cyan
-      try {
-        $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5 -Headers @{ "Authorization" = ("Bearer " + $token) }
-        Write-Host ("HTTP " + $r.StatusCode)
-        Write-Host $r.Content
-      } catch {
-        Write-Host ("Status: " + $_.Exception.Response.StatusCode) -ForegroundColor Red
-        Write-Host $_.ErrorDetails.Message
+      $result = Invoke-AuthedGet -Url $url -Token $token
+      if ($result.ok) {
+        Write-Host ("HTTP " + $result.status)
+        Write-Host $result.body
+      } else {
+        Write-Host ("HTTP " + $result.status) -ForegroundColor Red
+        Write-Host $result.body
       }
       Write-Host ""
     }

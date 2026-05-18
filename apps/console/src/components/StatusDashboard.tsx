@@ -31,16 +31,24 @@ export interface StatusDashboardProps {
   fetcher?: typeof fetch;
   /** Refresh interval, ms; lower in tests. */
   pollMs?: number;
+  /** Tenant whose metrics to fetch from /v1/metrics. */
+  tenantId?: string;
 }
 
 const DEFAULT_URL =
   /* v8 ignore next */
   process.env.NEXT_PUBLIC_FORENSA_API_URL ?? "http://localhost:8000";
 
+const DEFAULT_TENANT_ID =
+  /* v8 ignore next */
+  process.env.NEXT_PUBLIC_FORENSA_DEMO_TENANT_ID ??
+  "00000000-0000-0000-0000-000000000001";
+
 export function StatusDashboard({
   apiUrl,
   fetcher = fetch,
   pollMs = 10_000,
+  tenantId = DEFAULT_TENANT_ID,
 }: StatusDashboardProps) {
   const baseUrl = apiUrl ?? DEFAULT_URL;
   const [state, setState] = useState<LoadState>("loading");
@@ -134,6 +142,12 @@ export function StatusDashboard({
         <ApiHealthPanel healthz={healthz} />
       ) : /* v8 ignore next */ null}
 
+      <MetricsPanel
+        apiUrl={baseUrl}
+        fetcher={fetcher}
+        tenantId={tenantId}
+        pollMs={pollMs}
+      />
       <PlannedPanels />
     </div>
   );
@@ -252,7 +266,7 @@ function PlannedPanels() {
       }}
     >
       <h2 style={{ marginTop: 0, fontSize: "1rem" }}>
-        Operational metrics{" "}
+        Signing latency{" "}
         <span
           style={{
             fontSize: "0.75rem",
@@ -264,24 +278,242 @@ function PlannedPanels() {
             fontWeight: 500,
           }}
         >
-          API-F15 planned
+          Phase 11 — request middleware
         </span>
       </h2>
       <p style={{ fontSize: "0.9rem", color: "#374151", margin: "0 0 0.75rem" }}>
-        The following panels render when{" "}
-        <code style={{ fontFamily: "monospace" }}>GET /v1/metrics</code> lands
-        per the v2.0 forward queue. Today only{" "}
-        <code style={{ fontFamily: "monospace" }}>/healthz</code> is wired.
+        p50 / p95 / p99 require HTTP middleware to record per-request
+        timings. <code style={{ fontFamily: "monospace" }}>GET /v1/metrics</code>{" "}
+        (API-F15) is wired today; latency histograms ship with the Phase 11
+        observability sweep.
       </p>
       <ul
         data-testid="status-planned-list"
         style={{ margin: 0, paddingLeft: "1.25rem", color: "#6b7280", fontSize: "0.85rem" }}
       >
-        <li>Ingest rate (events / second, 24h sparkline)</li>
-        <li>Signing latency p50 / p95 / p99</li>
-        <li>Anchor success / failure / deferred counts</li>
-        <li>Chain integrity check (rolling)</li>
+        <li>Ingest rate (events / hour, 24h window) — present above</li>
+        <li>Signing latency p50 / p95 / p99 — Phase 11</li>
+        <li>Anchor success / failure / deferred counts — present above</li>
+        <li>Chain integrity (head sequence + freshness) — present above</li>
       </ul>
     </article>
+  );
+}
+
+export interface MetricsResponse {
+  tenant_id: string;
+  generated_at: string;
+  window_hours: number;
+  window_start: string;
+  window_end: string;
+  ingest: {
+    events_total: number;
+    events_in_window: number;
+    events_per_hour: number;
+  };
+  signing: {
+    receipts_total: number;
+    receipts_in_window: number;
+    receipts_per_hour: number;
+    chain_head_sequence: number | null;
+    last_receipt_signed_at: string | null;
+  };
+  anchoring: {
+    anchors_in_window: number;
+    anchored: number;
+    deferred: number;
+  };
+  ma_export_jobs: {
+    pending: number;
+    running: number;
+    completed: number;
+    failed: number;
+  };
+}
+
+interface MetricsPanelProps {
+  apiUrl: string;
+  fetcher: typeof fetch;
+  tenantId: string;
+  pollMs: number;
+}
+
+function MetricsPanel({ apiUrl, fetcher, tenantId, pollMs }: MetricsPanelProps) {
+  const [state, setState] = useState<LoadState>("loading");
+  const [metrics, setMetrics] = useState<MetricsResponse | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string>("");
+
+  const refresh = useCallback(async () => {
+    try {
+      const r = await fetcher(
+        `${apiUrl}/v1/metrics?tenant_id=${encodeURIComponent(tenantId)}`,
+      );
+      if (!r.ok) {
+        setState("error");
+        setErrorMsg(`HTTP ${r.status}`);
+        return;
+      }
+      const body = (await r.json()) as MetricsResponse;
+      setMetrics(body);
+      setState("ok");
+    } catch (e) {
+      setState("error");
+      setErrorMsg((e as Error).message);
+    }
+  }, [apiUrl, fetcher, tenantId]);
+
+  useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, pollMs);
+    return () => clearInterval(id);
+  }, [refresh, pollMs]);
+
+  if (state === "loading") {
+    return <p data-testid="status-metrics-loading">Loading metrics…</p>;
+  }
+  if (state === "error") {
+    return (
+      <p
+        data-testid="status-metrics-error"
+        role="alert"
+        style={{
+          color: "#991b1b",
+          padding: "0.75rem 1rem",
+          background: "#fef2f2",
+          border: "1px solid #fca5a5",
+          borderRadius: "0.4rem",
+        }}
+      >
+        Couldn&apos;t load metrics: {errorMsg}
+      </p>
+    );
+  }
+  /* v8 ignore next 3 */
+  if (!metrics) {
+    return null;
+  }
+  return (
+    <article
+      data-testid="status-metrics-panel"
+      style={{
+        padding: "1rem",
+        border: "1px solid #e5e7eb",
+        borderRadius: "0.5rem",
+        background: "white",
+      }}
+    >
+      <h2 style={{ marginTop: 0, fontSize: "1rem" }}>
+        Operational metrics{" "}
+        <span
+          data-testid="status-metrics-window"
+          style={{
+            fontSize: "0.75rem",
+            background: "#dcfce7",
+            color: "#166534",
+            padding: "0.15rem 0.45rem",
+            borderRadius: "0.4rem",
+            marginLeft: "0.5rem",
+            fontWeight: 500,
+          }}
+        >
+          {metrics.window_hours}h window
+        </span>
+      </h2>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(12rem, 1fr))",
+          gap: "0.75rem",
+          marginTop: "0.5rem",
+        }}
+      >
+        <MetricCard
+          testid="status-metrics-ingest"
+          label="Ingest rate"
+          value={`${metrics.ingest.events_per_hour.toFixed(1)} / hour`}
+          sub={`${metrics.ingest.events_in_window} events in window · ${metrics.ingest.events_total} total`}
+        />
+        <MetricCard
+          testid="status-metrics-signing"
+          label="Signing rate"
+          value={`${metrics.signing.receipts_per_hour.toFixed(1)} / hour`}
+          sub={`${metrics.signing.receipts_in_window} receipts in window · ${metrics.signing.receipts_total} total`}
+        />
+        <MetricCard
+          testid="status-metrics-chain"
+          label="Chain head"
+          value={
+            metrics.signing.chain_head_sequence === null
+              ? "no receipts yet"
+              : `seq ${metrics.signing.chain_head_sequence}`
+          }
+          sub={
+            metrics.signing.last_receipt_signed_at
+              ? `last signed ${new Date(metrics.signing.last_receipt_signed_at).toISOString()}`
+              : "—"
+          }
+        />
+        <MetricCard
+          testid="status-metrics-anchors"
+          label="Anchors (window)"
+          value={`${metrics.anchoring.anchored} ok · ${metrics.anchoring.deferred} deferred`}
+          sub={`${metrics.anchoring.anchors_in_window} total`}
+          flag={metrics.anchoring.deferred > 0 ? "warn" : "ok"}
+        />
+        <MetricCard
+          testid="status-metrics-jobs"
+          label="M&A jobs (window)"
+          value={`${metrics.ma_export_jobs.completed} done · ${metrics.ma_export_jobs.failed} failed`}
+          sub={`${metrics.ma_export_jobs.pending} pending · ${metrics.ma_export_jobs.running} running`}
+          flag={metrics.ma_export_jobs.failed > 0 ? "warn" : "ok"}
+        />
+      </div>
+    </article>
+  );
+}
+
+function MetricCard({
+  testid,
+  label,
+  value,
+  sub,
+  flag = "ok",
+}: {
+  testid: string;
+  label: string;
+  value: string;
+  sub: string;
+  flag?: "ok" | "warn";
+}) {
+  const bg = flag === "warn" ? "#fef3c7" : "#f9fafb";
+  const fg = flag === "warn" ? "#92400e" : "#111827";
+  return (
+    <div
+      data-testid={testid}
+      style={{
+        padding: "0.65rem 0.85rem",
+        background: bg,
+        color: fg,
+        borderRadius: "0.4rem",
+        border: "1px solid #e5e7eb",
+      }}
+    >
+      <div
+        style={{
+          fontSize: "0.7rem",
+          textTransform: "uppercase",
+          letterSpacing: "0.05em",
+          opacity: 0.7,
+        }}
+      >
+        {label}
+      </div>
+      <div style={{ fontSize: "1rem", fontWeight: 600, marginTop: "0.15rem" }}>
+        {value}
+      </div>
+      <div style={{ fontSize: "0.75rem", marginTop: "0.15rem", opacity: 0.7 }}>
+        {sub}
+      </div>
+    </div>
   );
 }

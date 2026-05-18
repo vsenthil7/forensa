@@ -1,5 +1,9 @@
 import { StatusDashboard } from "@/components/StatusDashboard";
 
+const DEMO_TENANT_ID =
+  process.env.NEXT_PUBLIC_FORENSA_DEMO_TENANT_ID ??
+  "00000000-0000-0000-0000-000000000001";
+
 export default function StatusPage() {
   return (
     <main data-testid="status-page">
@@ -11,12 +15,13 @@ export default function StatusPage() {
           marginBottom: "1.5rem",
         }}
       >
-        Live API health + narrative-client transparency from{" "}
-        <code style={{ fontFamily: "monospace" }}>/healthz</code>. Operational
-        metrics (ingest rate, signing latency, anchor success/failure) ship
-        with API-F15 in the v2.0 forward queue.
+        Live API health from <code style={{ fontFamily: "monospace" }}>/healthz</code> +
+        tenant-scoped operational metrics from{" "}
+        <code style={{ fontFamily: "monospace" }}>/v1/metrics</code> (API-F15).
+        Signing latency p50 / p95 / p99 ships with the Phase 11 observability
+        sweep.
       </p>
-      <StatusDashboard />
+      <StatusDashboard tenantId={DEMO_TENANT_ID} />
     </main>
   );
 }

@@ -55,9 +55,10 @@ services:
     container_name: forensa-api-migrate
     restart: "no"
     environment:
+      # alembic/env.py reads FORENSA_DATABASE_URL specifically.
+      # API code reads FORENSA_DB_URL. Both point to the same postgres.
+      FORENSA_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-forensa}:${POSTGRES_PASSWORD:-forensa_dev_pw}@postgres:5432/${POSTGRES_DB:-forensa}
       FORENSA_DB_URL: postgresql+asyncpg://${POSTGRES_USER:-forensa}:${POSTGRES_PASSWORD:-forensa_dev_pw}@postgres:5432/${POSTGRES_DB:-forensa}
-      # Sync DSN for alembic (it uses a sync driver internally)
-      ALEMBIC_DB_URL: postgresql://${POSTGRES_USER:-forensa}:${POSTGRES_PASSWORD:-forensa_dev_pw}@postgres:5432/${POSTGRES_DB:-forensa}
     depends_on:
       postgres:
         condition: service_healthy

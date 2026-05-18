@@ -1,16 +1,21 @@
-"""CP9.60 — apply an unzipped tree into the live working tree with backup discipline.
+"""CP9.60 - apply an unzipped tree into the live working tree with backup discipline.
 
 Usage:
     python scripts/cp960_apply_tree.py <source_tree> <dest_tree>
 
 For every file under <source_tree>:
+  - Compute rel_from_repo = dest_path relative to repo_root (the path as git sees it)
   - If the same relative path exists under <dest_tree> AND is tracked by git:
-        backup current dest copy to _backup/<rel-dir>/<fname>_YYYYMMDD-HHMM.ext
+        backup current dest copy to _backup/<rel_from_repo.parent>/<fname>_YYYYMMDD-HHMM.ext
         then overwrite with source copy
   - If exists but untracked:                       overwrite without backup
   - If does NOT exist:                             create new
 
 Prints a per-file action manifest.
+
+FIX 2026-05-18 17:00: backup path now uses rel_from_repo.parent (git-relative)
+not rel.parent (source-relative). Previously when source was <staging>/.../docs
+the backup landed at _backup/02_brd/foo.md instead of _backup/docs/02_brd/foo.md.
 """
 
 from __future__ import annotations
@@ -73,8 +78,8 @@ def main() -> int:
         try:
             if dest_path.exists():
                 if is_tracked(repo_root, rel_from_repo):
-                    # Backup
-                    backup_dir = repo_root / "_backup" / rel.parent
+                    # Backup uses git-relative path so _backup/<full-rel-from-repo>/
+                    backup_dir = repo_root / "_backup" / rel_from_repo.parent
                     backup_dir.mkdir(parents=True, exist_ok=True)
                     name = dest_path.stem + "_" + ts + dest_path.suffix
                     backup_path = backup_dir / name

@@ -128,6 +128,15 @@ $envLocalLines = @(
 Set-Content -Path $envLocalPath -Value ($envLocalLines -join "`r`n") -Encoding ASCII
 Write-Host "  wrote $envLocalPath (token len $($env:NEXT_PUBLIC_FORENSA_TOKEN.Length))"
 
+# Wipe Turbopack cache so the freshly-written .env.local actually
+# bakes into the client bundle. Without this, previous compiles that
+# captured an empty NEXT_PUBLIC_FORENSA_TOKEN can persist.
+$nextCache = Join-Path $frontendDir '.next'
+if (Test-Path $nextCache) {
+    Remove-Item -Path $nextCache -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host '  wiped .next/ cache'
+}
+
 # Start npm run dev. It auto-loads .env.local at startup.
 $devLog = Join-Path $env:TEMP "forensa-walkthrough-dev-$(Get-Date -Format yyyyMMdd_HHmmss).log"
 $devCmd = "Set-Location '$frontendDir'; `$env:PORT='3000'; npm run dev"

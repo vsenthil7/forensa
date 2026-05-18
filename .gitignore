@@ -79,6 +79,7 @@ src/logs/
 .env.*.local
 .env.*
 !.env.example
+!.env.compose
 *.pem
 *.key
 *.p12

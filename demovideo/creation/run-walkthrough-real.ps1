@@ -68,17 +68,38 @@ if ($geminiKeyLen -lt 30) {
 }
 Write-Host "  Gemini key in api container: $geminiKeyLen chars"
 
-# 3) Truncate
-Write-Host '[walkthrough-real] 3/8 truncating tenant tables' -ForegroundColor Cyan
-$truncateSql = "TRUNCATE TABLE receipts, events, timestamp_anchors, ma_export_jobs, policy_bundle_approvals, idempotency_records, policy_bundles, policy_snapshots, agents, tenants CASCADE;"
-docker exec -e PGPASSWORD=forensa_dev_pw forensa-postgres psql -U forensa -d forensa -c $truncateSql 2>&1 | Out-Null
-Write-Host '  ok'
+# 3) Truncate (data only) + pre-insert tenant row with the FIXED uuid
+#    that matches FORENSA_HMAC_TENANT_ID in the api container. Without this,
+#    the seeder creates a random tenant uuid, the token tenant_id mismatches
+#    HmacBearerTokenVerifier._tenant_id, and every authed request gets 401.
+Write-Host '[walkthrough-real] 3/8 truncating data tables (keeping fixed-tenant row)' -ForegroundColor Cyan
+# Read the fixed-tenant uuid + secret straight from the api container's env so
+# we cannot drift from the compose config.
+$apiTenantId = (docker exec forensa-api sh -c 'echo $FORENSA_HMAC_TENANT_ID' 2>$null).Trim()
+$apiHmacSecret = (docker exec forensa-api sh -c 'echo $FORENSA_HMAC_SECRET' 2>$null).Trim()
+if (-not $apiTenantId -or -not $apiHmacSecret) {
+    Write-Host "  FAIL: cannot read FORENSA_HMAC_TENANT_ID + FORENSA_HMAC_SECRET from api container" -ForegroundColor Red
+    exit 1
+}
+Write-Host "  api HMAC tenant : $apiTenantId"
 
-# 4) Seed with real FreeTSA
+# Truncate child tables first (FK order); tenants survives so we keep the
+# fixed-uuid row across reseeds.
+$truncateSql = "TRUNCATE TABLE receipts, events, timestamp_anchors, ma_export_jobs, policy_bundle_approvals, idempotency_records, policy_bundles, policy_snapshots, agents CASCADE; DELETE FROM tenants WHERE id <> '$apiTenantId';"
+docker exec -e PGPASSWORD=forensa_dev_pw forensa-postgres psql -U forensa -d forensa -c $truncateSql 2>&1 | Out-Null
+
+# Insert the fixed-id tenant row if missing (idempotent).
+$insertSql = "INSERT INTO tenants (id, slug, display_name, signing_key_id, created_at) VALUES ('$apiTenantId', 'forensa-demo', 'Forensa Demo Tenant', 'demo-tenant-key-v1', now()) ON CONFLICT (id) DO NOTHING;"
+docker exec -e PGPASSWORD=forensa_dev_pw forensa-postgres psql -U forensa -d forensa -c $insertSql 2>&1 | Out-Null
+Write-Host '  ok: fixed-id tenant row present + data tables cleared'
+
+# 4) Seed with real FreeTSA - and pass the api's HMAC secret so the
+#    minted token is verifiable by HmacBearerTokenVerifier in the api.
 Write-Host '[walkthrough-real] 4/8 seeding demo data (real FreeTSA TSA)' -ForegroundColor Cyan
 $seedOut = docker exec `
     -e PYTHONPATH=/app `
     -e FORENSA_DB_URL='postgresql+asyncpg://forensa:forensa_dev_pw@postgres:5432/forensa' `
+    -e FORENSA_DEMO_HMAC_SECRET=$apiHmacSecret `
     -w /app forensa-api python /app/scripts/seed_demo_data.py 2>&1 | Out-String
 Write-Host $seedOut
 

@@ -48,7 +48,7 @@ $backupDir = Join-Path $demoDir '_backup'
 $resultsDir = Join-Path (Split-Path -Parent $here) 'results\creation'
 $frontendDir = Join-Path $projectRoot 'apps\console'
 $specPath = 'tests-e2e/demo/walkthrough-9-screens.spec.ts'
-$testResultsDir = Join-Path $frontendDir 'test-results'
+$testResultsDir = Join-Path $frontendDir 'test-results-walkthrough'
 
 Write-Host ''
 Write-Host '[walkthrough] === Forensa 9-Screen Walkthrough Video === ' -ForegroundColor Yellow
@@ -103,7 +103,7 @@ try {
     $env:FORENSA_API_URL = if ($env:FORENSA_API_URL) { $env:FORENSA_API_URL } else { 'http://localhost:8000' }
     Remove-Item Env:FORENSA_TENANT_ID -ErrorAction SilentlyContinue
     Remove-Item Env:FORENSA_TOKEN -ErrorAction SilentlyContinue
-    npx playwright test $specPath --headed --project=chromium-desktop --reporter=line
+    npx playwright test --config playwright.demo-walkthrough.config.ts --headed --project=chromium-desktop
     if ($LASTEXITCODE -ne 0) {
         Write-Host '[walkthrough] pass 1 playwright failed - aborting' -ForegroundColor Red
         exit $LASTEXITCODE
@@ -149,7 +149,7 @@ Push-Location $frontendDir
 try {
     $env:DEMO = '1'
     $env:FORENSA_SKIP_PASS_1 = '1'
-    npx playwright test $specPath --headed --project=chromium-desktop --reporter=line
+    npx playwright test --config playwright.demo-walkthrough.config.ts --headed --project=chromium-desktop
     if ($LASTEXITCODE -ne 0) {
         Write-Host '[walkthrough] pass 2 playwright failed' -ForegroundColor Red
         exit $LASTEXITCODE

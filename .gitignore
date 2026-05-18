@@ -150,3 +150,4 @@ demovideo/results/*
 demovideo/results/creation/*
 !demovideo/results/creation/.gitkeep
 
+test-results-walkthrough/

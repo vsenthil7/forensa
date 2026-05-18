@@ -48,21 +48,29 @@ test.describe("TopNav (BR-14 AC-2, SCR-F01)", () => {
     );
   });
 
-  test("planned links (anchors, narratives, diligence, tabletop, status) are disabled spans", async ({
-    page,
-  }) => {
+  test("after CP9.58, no DEFAULT_NAV_ITEMS are marked planned (every link is active)", async ({ page }) => {
+    await page.goto(consoleUrl("/"));
+    // CP9.52..CP9.58 promoted every screen; there are no more planned
+    // entries in DEFAULT_NAV_ITEMS. The planned-rendering path still
+    // exists in TopNav.tsx for future RT-F* items but is unit-tested
+    // via a custom items prop in TopNav.test.tsx.
+    const planned = page.locator('[data-planned="true"]');
+    await expect(planned).toHaveCount(0);
+  });
+
+  test("/anchors, /diligence, /narratives, /tabletop, /status are active links (CP9.53..CP9.58)", async ({ page }) => {
     await page.goto(consoleUrl("/"));
     for (const id of [
       "topnav-link-anchors",
-      "topnav-link-narratives",
       "topnav-link-diligence",
+      "topnav-link-narratives",
       "topnav-link-tabletop",
       "topnav-link-status",
     ]) {
       const el = page.getByTestId(id);
       await expect(el).toBeVisible();
-      await expect(el).toHaveAttribute("aria-disabled", "true");
-      await expect(el).toHaveAttribute("data-planned", "true");
+      const tag = await el.evaluate((node) => node.tagName.toLowerCase());
+      expect(tag).toBe("a");
     }
   });
 

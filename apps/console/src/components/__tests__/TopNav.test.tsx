@@ -58,13 +58,35 @@ describe("TopNav", () => {
     );
   });
 
-  it("renders planned links as disabled spans with aria-disabled", () => {
+  it("renders a planned item passed via custom items as a disabled span (rendering path)", () => {
+    mockedUsePathname.mockReturnValue("/");
+    render(
+      <TopNav
+        items={[
+          { href: "/future", label: "Future", testid: "topnav-link-future", planned: true },
+        ]}
+      />,
+    );
+    const future = screen.getByTestId("topnav-link-future");
+    expect(future.getAttribute("aria-disabled")).toBe("true");
+    expect(future.getAttribute("data-planned")).toBe("true");
+    expect(future.tagName.toLowerCase()).toBe("span");
+  });
+
+  it("renders /anchors as an active link (was promoted in CP9.53)", () => {
     mockedUsePathname.mockReturnValue("/");
     render(<TopNav />);
     const anchors = screen.getByTestId("topnav-link-anchors");
-    expect(anchors.getAttribute("aria-disabled")).toBe("true");
-    expect(anchors.getAttribute("data-planned")).toBe("true");
-    expect(anchors.tagName.toLowerCase()).toBe("span");
+    expect(anchors.getAttribute("aria-disabled")).toBeNull();
+    expect(anchors.tagName.toLowerCase()).toBe("a");
+  });
+
+  it("marks /anchors link active when on /anchors", () => {
+    mockedUsePathname.mockReturnValue("/anchors");
+    render(<TopNav />);
+    expect(screen.getByTestId("topnav-link-anchors").getAttribute("data-active")).toBe(
+      "true",
+    );
   });
 
   it("renders the tenant label chip when provided", () => {

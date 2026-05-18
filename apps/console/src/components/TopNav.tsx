@@ -40,13 +40,11 @@ export const DEFAULT_NAV_ITEMS: ReadonlyArray<TopNavItem> = [
   { href: "/", label: "Home", testid: "topnav-link-home" },
   { href: "/receipts", label: "Receipts", testid: "topnav-link-receipts" },
   { href: "/evidence", label: "Evidence", testid: "topnav-link-evidence" },
-  // Planned in v2.0 forward queue; surfaced disabled so the operator
-  // can see the product surface area without dead-end clicks.
-  { href: "/anchors", label: "Anchors", testid: "topnav-link-anchors", planned: true },
-  { href: "/narratives", label: "Narratives", testid: "topnav-link-narratives", planned: true },
-  { href: "/diligence", label: "Diligence", testid: "topnav-link-diligence", planned: true },
-  { href: "/tabletop", label: "Tabletop", testid: "topnav-link-tabletop", planned: true },
-  { href: "/status", label: "Status", testid: "topnav-link-status", planned: true },
+  { href: "/anchors", label: "Anchors", testid: "topnav-link-anchors" },
+  { href: "/diligence", label: "Diligence", testid: "topnav-link-diligence" },
+  { href: "/narratives", label: "Narratives", testid: "topnav-link-narratives" },
+  { href: "/tabletop", label: "Tabletop", testid: "topnav-link-tabletop" },
+  { href: "/status", label: "Status", testid: "topnav-link-status" },
 ];
 
 export interface TopNavProps {
